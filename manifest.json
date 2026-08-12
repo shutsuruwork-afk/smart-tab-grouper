@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Smart Tab Grouper - 分野別タブ自動整理",
+  "version": "1.1.0",
+  "description": "開発系・小説執筆系・AI検索系など、開いているタブを分野ごとに自動・手動で色付きタブグループに整理します。ドメイン最優先判定・誤検知防止・プレビュー・Undo機能対応。",
+  "permissions": [
+    "tabs",
+    "tabGroups",
+    "storage",
+    "unlimitedStorage"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_page": "options/options.html",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
