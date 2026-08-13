@@ -92,6 +92,31 @@ test('説明と見出しに複数の根拠がある場合だけ分類する', ()
   assert.equal(classifyContentSignals({ meta: 'JavaScript', headings: '', body: '' }, categories), null);
 });
 
+test('停止中の分類は補助判定と保存済み補助結果から除外する', () => {
+  const disabledCategories = categories.map((category) => ({
+    ...category,
+    enabled: category.id !== 'cat_dev'
+  }));
+  const signals = {
+    meta: 'JavaScript API reference for developers',
+    headings: 'Source code examples',
+    body: ''
+  };
+  assert.equal(classifyContentSignals(signals, disabledCategories), null);
+
+  const assisted = new Map([[1, {
+    categoryId: 'cat_dev',
+    url: 'https://unknown.example/',
+    title: 'Source code'
+  }]]);
+  const classify = createContentAssistedClassifier(assisted);
+  assert.equal(classify({
+    id: 1,
+    url: 'https://unknown.example/',
+    title: 'Source code'
+  }, disabledCategories), null);
+});
+
 test('二つの分類が拮抗する場合は決めつけない', () => {
   const ambiguous = [
     { id: 'first', name: 'A', enabled: true, contentKeywords: ['alpha', 'beta'] },

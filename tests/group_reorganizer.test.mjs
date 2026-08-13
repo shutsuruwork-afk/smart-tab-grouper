@@ -64,6 +64,22 @@ test('結果が一分類だけならグループを作り直さない', () => {
   assert.equal(plan.targetGroupCount, 0);
 });
 
+test('停止中の分類へは既存グループ内のタブを移動しない', () => {
+  const source = group(50, { title: '開発', color: 'purple' });
+  const disabledCategories = categories.map((item) => ({
+    ...item,
+    enabled: item.id !== 'cat_news'
+  }));
+  const plan = buildGroupReorganizationPlan([
+    tab(1, 0, 50, 'https://github.com/project'),
+    tab(2, 1, 50, 'https://bbc.com/news')
+  ], source, disabledCategories, {});
+
+  assert.deepEqual(plan.retainedTabIds, [1, 2]);
+  assert.equal(plan.movedCount, 0);
+  assert.equal(plan.items.length, 0);
+});
+
 test('再構成を一つのUndoで元グループと元順序へ戻す', async () => {
   const chromeApi = createChromeFake({
     tabs: [

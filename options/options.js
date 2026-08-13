@@ -48,6 +48,7 @@ const themeOptions = document.getElementById('themeOptions');
 const contentClassificationToggle = document.getElementById('contentClassificationToggle');
 const contentClassificationAccessStatus = document.getElementById('contentClassificationAccessStatus');
 const groupUnmatchedToggle = document.getElementById('groupUnmatchedToggle');
+const categoryEnabledToggle = document.getElementById('categoryEnabledToggle');
 const behaviorOrganizeButton = document.getElementById('behaviorOrganizeButton');
 const domainInput = document.getElementById('domainInput');
 const addDomainButton = document.getElementById('addDomainButton');
@@ -172,6 +173,7 @@ async function initialize() {
   });
   contentClassificationToggle.addEventListener('change', changeContentClassificationBehavior);
   groupUnmatchedToggle.addEventListener('change', changeUnmatchedBehavior);
+  categoryEnabledToggle.addEventListener('change', changeCategoryEnabled);
   behaviorOrganizeButton.addEventListener('click', organizeFromBehaviorSettings);
   saveButton.addEventListener('click', saveChanges);
   discardButton.addEventListener('click', discardChanges);
@@ -1109,7 +1111,16 @@ function isEditableElement(target) {
 }
 
 function renderCategoryList() {
-  categoryCount.textContent = String(categories.length);
+  const enabledCount = categories.filter((category) => category.enabled !== false).length;
+  categoryCount.textContent = enabledCount === categories.length
+    ? String(categories.length)
+    : `${enabledCount}/${categories.length}`;
+  categoryCount.setAttribute(
+    'aria-label',
+    enabledCount === categories.length
+      ? `${categories.length}件すべて使用中`
+      : `${categories.length}件中${enabledCount}件を使用中`
+  );
   categoryList.replaceChildren();
 
   for (const category of categories) {
@@ -1117,6 +1128,7 @@ function renderCategoryList() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'category-item';
+    button.classList.toggle('is-disabled', category.enabled === false);
     button.dataset.categoryId = category.id;
     button.setAttribute('aria-current', String(
       selectedView === 'group' && category.id === selectedCategoryId
@@ -1134,7 +1146,9 @@ function renderCategoryList() {
     name.textContent = category.name;
     const meta = document.createElement('span');
     meta.className = 'category-meta';
-    meta.textContent = `${category.domains?.length || 0} ドメイン・${color.label}`;
+    meta.textContent = category.enabled === false
+      ? `停止中・${category.domains?.length || 0} ドメイン・${color.label}`
+      : `${category.domains?.length || 0} ドメイン・${color.label}`;
     copy.append(name, meta);
 
     const chevron = document.createElement('span');
@@ -1181,6 +1195,7 @@ function renderEditor() {
   editorOverline.textContent = 'EDIT GROUP';
   editorTitle.textContent = category.name;
   selectedColorDot.style.setProperty('--group-color', color.hex);
+  categoryEnabledToggle.checked = category.enabled !== false;
   domainFeedback.textContent = '';
   domainFeedback.classList.remove('is-success');
   renderDomains(category);
@@ -1489,6 +1504,14 @@ function selectBehavior() {
 function changeUnmatchedBehavior(event) {
   organizeSettings.groupUnmatchedAsOthers = event.target.checked;
   renderBehaviorSettings();
+  markDirty();
+}
+
+function changeCategoryEnabled(event) {
+  const category = getSelectedCategory();
+  if (!category) return;
+  category.enabled = event.target.checked;
+  renderCategoryList();
   markDirty();
 }
 

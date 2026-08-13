@@ -89,6 +89,27 @@ test('完了後に分類設定が更新された場合は古い結果から上�
   assert.equal(chromeApi.state.tabs[0].groupId, 101);
 });
 
+test('停止中の分類は完了画面の修正先として受け付けない', async () => {
+  const categories = [
+    { id: 'cat_search', name: '検索', color: 'cyan', enabled: true, domains: ['google.com'] },
+    { id: 'cat_work', name: '仕事', color: 'blue', enabled: false, domains: [] }
+  ];
+  const chromeApi = createChromeFake(categories);
+
+  await assert.rejects(correctTabClassification({
+    chromeApi,
+    windowId: 7,
+    operationId: 'op-correct',
+    tabId: 1,
+    targetCategoryId: 'cat_work',
+    categories,
+    now: () => 2_000
+  }), /修正先を確認できませんでした/);
+
+  assert.equal(chromeApi.state.tabs[0].groupId, 101);
+  assert.deepEqual(await settingsStorage.loadCategories(chromeApi.storage.sync, []), categories);
+});
+
 test('修正保存に失敗して元グループを再作成した場合は所有権IDも更新する', async () => {
   const categories = [
     { id: 'cat_search', name: '検索', color: 'cyan', enabled: true, domains: ['google.com'] },

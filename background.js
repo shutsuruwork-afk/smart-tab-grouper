@@ -672,15 +672,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     addExclusion(message.domain).then(res => sendResponse(res));
     return true;
   }
-  if (message.action === "RESET_TO_DEFAULT") {
-    settingsStorage.saveCategories(chrome.storage.sync, DEFAULT_CATEGORIES, {
-      settings: DEFAULT_SETTINGS
-    })
-      .then(() => sendResponse({ success: true }))
-      .catch((error) => sendResponse({
-        success: false,
-        message: error?.message || '設定を初期化できませんでした。'
-      }));
-    return true;
-  }
 });

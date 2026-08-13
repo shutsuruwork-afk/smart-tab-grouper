@@ -17,6 +17,7 @@ test('enabledを省略した旧分類ルールも既定で有効として扱う'
 
   assert.equal(normalized[0].enabled, true);
   assert.deepEqual(normalized[0].domains, ['example.com']);
+  assert.equal(classifyTab({ url: 'https://www.example.com/' }, legacy).id, 'legacy-search');
   assert.equal(classifyTab({ url: 'https://www.example.com/' }, normalized).id, 'legacy-search');
   assert.equal(legacy[0].enabled, undefined);
 });
