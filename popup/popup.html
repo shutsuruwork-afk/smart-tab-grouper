@@ -7,97 +7,65 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div class="app-container">
-    <!-- Header -->
-    <header class="app-header">
-      <div class="logo-title">
-        <div class="logo-icon">🗂️</div>
-        <div>
-          <h1>Smart Tab Grouper</h1>
-          <p class="subtitle">ドメイン最優先 ＆ 誤検知防止モデル</p>
+  <main id="popupCard" class="popup-card">
+    <section id="confirmationView" class="popup-view" aria-labelledby="confirmationTitle" aria-describedby="confirmationDescription">
+      <div class="view-copy">
+        <div class="view-heading">
+          <h1 id="confirmationTitle">整理するタブを確認しています…</h1>
+          <button class="settings-link" type="button" title="設定を開く" aria-label="設定を開く">
+            <span>設定</span>
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M7 4h9v9h-2V7.4l-8.3 8.3-1.4-1.4L12.6 6H7V4Z"/>
+            </svg>
+          </button>
         </div>
+        <p id="confirmationDescription">現在のウィンドウだけを確認しています。</p>
       </div>
-      <button id="btnOptions" class="icon-button" title="設定画面を開く">
-        ⚙️
-      </button>
-    </header>
 
-    <!-- Mode Toggles Container -->
-    <div class="toggles-grid">
-      <!-- Realtime Auto-Group Toggle -->
-      <div class="toggle-card">
-        <div class="toggle-label">
-          <span class="toggle-title">⚡ リアルタイム自動分け</span>
-          <span class="toggle-desc">タブ移動時に自動グループ化</span>
+      <p id="confirmationStatus" class="status-message" role="status" aria-live="polite"></p>
+
+      <div class="view-actions">
+        <button id="btnCancel" class="button button-secondary" type="button">キャンセル</button>
+        <button id="btnConfirm" class="button button-primary" type="button" disabled>整理</button>
+      </div>
+    </section>
+
+    <section id="progressView" class="popup-view progress-view" aria-labelledby="progressTitle" hidden>
+      <span class="progress-indicator" aria-hidden="true"></span>
+      <div class="progress-copy">
+        <h1 id="progressTitle">整理しています…</h1>
+        <p>このまま少しお待ちください。</p>
+      </div>
+    </section>
+
+    <section id="completionView" class="popup-view completion-view" aria-labelledby="completionTitle" hidden>
+      <div class="view-copy">
+        <div class="view-heading">
+          <div class="completion-heading-copy">
+            <span class="completion-mark" aria-hidden="true">✓</span>
+            <h1 id="completionTitle">整理しました</h1>
+          </div>
+          <button class="settings-link" type="button" title="設定を開く" aria-label="設定を開く">
+            <span>設定</span>
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <path d="M7 4h9v9h-2V7.4l-8.3 8.3-1.4-1.4L12.6 6H7V4Z"/>
+            </svg>
+          </button>
         </div>
-        <label class="switch">
-          <input type="checkbox" id="chkAutoGroup">
-          <span class="slider round"></span>
-        </label>
+        <p id="completionDescription"></p>
       </div>
 
-      <!-- Preview Dry-Run Toggle -->
-      <div class="toggle-card highlight-card">
-        <div class="toggle-label">
-          <span class="toggle-title">🧪 プレビューモード (テスト)</span>
-          <span class="toggle-desc">実環境のタブを変更せず分類をテスト</span>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="chkPreviewMode">
-          <span class="slider round"></span>
-        </label>
+      <div id="completionGroups" class="completion-groups" aria-label="整理したグループ"></div>
+      <p id="completionStatus" class="status-message" role="status" aria-live="polite"></p>
+      <div class="view-actions completion-actions">
+        <button id="btnUndo" class="button button-secondary" type="button" title="ショートカット: Ctrl+Z" aria-label="タブグループを元に戻す">元に戻す</button>
+        <button id="btnClose" class="button button-primary" type="button">閉じる</button>
       </div>
-    </div>
+    </section>
+  </main>
 
-    <!-- Main Actions -->
-    <div class="action-section">
-      <button id="btnOrganize" class="btn-primary">
-        <span class="btn-icon">✨</span>
-        <span class="btn-text" id="lblOrganizeBtn">今すぐタブを一括整理</span>
-      </button>
-
-      <div class="quick-actions">
-        <button id="btnUndo" class="btn-secondary" title="前回の整理結果を元に戻す">
-          <span>↩️</span> 元に戻す
-        </button>
-        <button id="btnExcludeCurrent" class="btn-secondary" title="現在のタブのドメインを次回からグループ除外">
-          <span>🚫</span> ドメイン除外
-        </button>
-      </div>
-      <div class="quick-actions">
-        <button id="btnRemoveDuplicates" class="btn-secondary" title="同じURLの重複タブを削除">
-          <span>🧹</span> 重複整理
-        </button>
-        <button id="btnUngroup" class="btn-secondary" title="現在のグループ分けを解除">
-          <span>🔓</span> グループ解除
-        </button>
-      </div>
-    </div>
-
-    <!-- Dashboard Stats -->
-    <div class="stats-grid">
-      <div class="stat-card">
-        <span class="stat-value" id="statTabCount">0</span>
-        <span class="stat-label">総タブ数</span>
-      </div>
-      <div class="stat-card">
-        <span class="stat-value" id="statGroupCount">0</span>
-        <span class="stat-label">アクティブグループ</span>
-      </div>
-    </div>
-
-    <!-- Current Tab Groups List -->
-    <div class="groups-section">
-      <div class="section-header">
-        <h2 id="listSectionTitle">現在のグループ一覧</h2>
-        <span id="statusToast" class="status-toast"></span>
-      </div>
-      <div id="groupList" class="group-list">
-        <div class="loading-spinner">読み込み中...</div>
-      </div>
-    </div>
-  </div>
-
-  <script type="module" src="popup.js"></script>
+  <script src="../utils/theme.js"></script>
+  <script src="../utils/tab_navigation.js"></script>
+  <script src="popup.js"></script>
 </body>
 </html>

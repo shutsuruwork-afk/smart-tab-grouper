@@ -1,317 +1,1893 @@
-import { DEFAULT_CATEGORIES, DEFAULT_SETTINGS } from '../utils/default_rules.js';
+const FALLBACK_CATEGORIES = [
+  {
+    id: 'cat_dev',
+    name: '💻 開発・プログラミング',
+    color: 'purple',
+    enabled: true,
+    domains: ['github.com', 'github.io', 'gitlab.com', 'stackoverflow.com', 'qiita.com', 'zenn.dev', 'developer.mozilla.org', 'docs.python.org', 'npmjs.com', 'localhost', '127.0.0.1'],
+    titleKeywords: ['GitHub', 'Stack Overflow', 'Qiita', 'Zenn', 'MDN Web Docs']
+  },
+  {
+    id: 'cat_novel',
+    name: '✍️ 小説執筆・リサーチ',
+    color: 'green',
+    enabled: true,
+    domains: ['syosetu.com', 'kakuyomu.jp', 'alphapolis.co.jp', 'pixiv.net', 'weblio.jp', 'dictionary.goo.ne.jp', 'wikipedia.org', 'notion.so', 'docs.google.com'],
+    titleKeywords: ['小説家になろう', 'カクヨム', '類語辞典', 'Wikipedia']
+  },
+  {
+    id: 'cat_ai_search',
+    name: '🔍 検索・AIアシスタント',
+    color: 'cyan',
+    enabled: true,
+    domains: ['google.com', 'google.co.jp', 'bing.com', 'chatgpt.com', 'claude.ai', 'perplexity.ai', 'gemini.google.com'],
+    titleKeywords: ['Google 検索', 'ChatGPT', 'Claude', 'Gemini']
+  },
+  {
+    id: 'cat_media',
+    name: '🎬 動画・メディア',
+    color: 'red',
+    enabled: true,
+    domains: ['youtube.com', 'youtu.be', 'netflix.com', 'twitch.tv', 'nicovideo.jp', 'tver.jp', 'spotify.com'],
+    titleKeywords: ['YouTube', 'Twitch', 'Netflix']
+  },
+  {
+    id: 'cat_sns',
+    name: '💬 SNS・対話',
+    color: 'pink',
+    enabled: true,
+    domains: ['x.com', 'twitter.com', 'discord.com', 'slack.com', 'reddit.com', 'instagram.com'],
+    titleKeywords: ['X (Twitter)', 'Discord', 'Slack', 'Reddit']
+  },
+  {
+    id: 'cat_shopping',
+    name: '🛒 ショッピング',
+    color: 'yellow',
+    enabled: true,
+    domains: ['amazon.co.jp', 'amazon.com', 'rakuten.co.jp', 'mercari.com', 'shopping.yahoo.co.jp'],
+    titleKeywords: ['Amazon', '楽天市場', 'メルカリ']
+  },
+  {
+    id: 'cat_news',
+    name: '📰 ニュース・情報',
+    color: 'orange',
+    enabled: true,
+    domains: ['news.yahoo.co.jp', 'nikkei.com', 'hatena.ne.jp', 'asahi.com', 'itmedia.co.jp', 'bbc.com'],
+    titleKeywords: ['Yahoo!ニュース', '日経電子版', 'ITmedia']
+  }
+];
 
-document.addEventListener('DOMContentLoaded', async () => {
-  // UI Elements
-  const optStrictDomainPriority = document.getElementById('optStrictDomainPriority');
-  const optGroupPinned = document.getElementById('optGroupPinned');
-  const optDomainFallback = document.getElementById('optDomainFallback');
-  const optCollapseInactive = document.getElementById('optCollapseInactive');
-  const txtExclusions = document.getElementById('txtExclusions');
-  const btnSaveExclusions = document.getElementById('btnSaveExclusions');
-  const categoryContainer = document.getElementById('categoryContainer');
-  const btnAddCategory = document.getElementById('btnAddCategory');
-  const btnExportJson = document.getElementById('btnExportJson');
-  const btnImportJson = document.getElementById('btnImportJson');
-  const fileInput = document.getElementById('fileInput');
-  const btnResetDefault = document.getElementById('btnResetDefault');
-  
-  // Modal Elements
-  const categoryModal = document.getElementById('categoryModal');
-  const modalTitle = document.getElementById('modalTitle');
-  const categoryForm = document.getElementById('categoryForm');
-  const catEditId = document.getElementById('catEditId');
-  const catName = document.getElementById('catName');
-  const catColor = document.getElementById('catColor');
-  const catDomains = document.getElementById('catDomains');
-  const catKeywords = document.getElementById('catKeywords');
-  const catRegex = document.getElementById('catRegex');
-  const btnCloseModal = document.getElementById('btnCloseModal');
-  const btnCancelModal = document.getElementById('btnCancelModal');
+const GROUP_COLORS = [
+  { value: 'grey', label: 'グレー', hex: '#5f6368' },
+  { value: 'blue', label: 'ブルー', hex: '#1a73e8' },
+  { value: 'red', label: 'レッド', hex: '#d93025' },
+  { value: 'yellow', label: 'イエロー', hex: '#f9ab00' },
+  { value: 'green', label: 'グリーン', hex: '#188038' },
+  { value: 'pink', label: 'ピンク', hex: '#d01884' },
+  { value: 'purple', label: 'パープル', hex: '#a142f4' },
+  { value: 'cyan', label: 'シアン', hex: '#12b5cb' },
+  { value: 'orange', label: 'オレンジ', hex: '#fa903e' }
+];
 
-  const toast = document.getElementById('toast');
+const PREVIEW_STORAGE_KEY = 'smart-tab-grouper-options-preview';
+const MANAGED_GROUPS_STORAGE_KEY = 'smartTabGrouperManagedGroupsV1';
+const UNGROUPED_SELECTION_ID = 'ungrouped';
+const DEFAULT_ORGANIZE_SETTINGS = Object.freeze({
+  contentClassificationEnabled: false,
+  groupUnmatchedAsOthers: false
+});
+const previewMode = new URLSearchParams(window.location.search).get('preview') === '1';
+const storage = createStorageAdapter();
+const organizer = createOrganizerAdapter();
 
-  let categories = [];
-  let settings = {};
+const workspacePickerButton = document.getElementById('workspacePickerButton');
+const workspaceTitle = document.getElementById('workspaceTitle');
+const workspaceMenu = document.getElementById('workspaceMenu');
+const settingsWorkspaceOption = document.getElementById('settingsWorkspaceOption');
+const organizerWorkspaceOption = document.getElementById('organizerWorkspaceOption');
+const settingsDirtyIndicator = document.getElementById('settingsDirtyIndicator');
+const settingsWorkspace = document.getElementById('settingsWorkspace');
+const organizerWorkspace = document.getElementById('organizerWorkspace');
+const behaviorNav = document.getElementById('behaviorNav');
+const appearanceNav = document.getElementById('appearanceNav');
+const categoryList = document.getElementById('categoryList');
+const categoryCount = document.getElementById('categoryCount');
+const editorTitle = document.getElementById('editorTitle');
+const editorOverline = document.getElementById('editorOverline');
+const behaviorEditorIcon = document.getElementById('behaviorEditorIcon');
+const appearanceEditorIcon = document.getElementById('appearanceEditorIcon');
+const selectedColorDot = document.getElementById('selectedColorDot');
+const saveState = document.getElementById('saveState');
+const appearanceEditor = document.getElementById('appearanceEditor');
+const behaviorEditor = document.getElementById('behaviorEditor');
+const groupEditor = document.getElementById('groupEditor');
+const themeOptions = document.getElementById('themeOptions');
+const contentClassificationToggle = document.getElementById('contentClassificationToggle');
+const groupUnmatchedToggle = document.getElementById('groupUnmatchedToggle');
+const behaviorOrganizeButton = document.getElementById('behaviorOrganizeButton');
+const domainInput = document.getElementById('domainInput');
+const addDomainButton = document.getElementById('addDomainButton');
+const domainFeedback = document.getElementById('domainFeedback');
+const domainList = document.getElementById('domainList');
+const emptyDomains = document.getElementById('emptyDomains');
+const colorOptions = document.getElementById('colorOptions');
+const changeSummary = document.getElementById('changeSummary');
+const discardButton = document.getElementById('discardButton');
+const saveButton = document.getElementById('saveButton');
+const toast = document.getElementById('toast');
+const previewBadge = document.getElementById('previewBadge');
+const refreshGroupsButton = document.getElementById('refreshGroupsButton');
+const currentGroupList = document.getElementById('currentGroupList');
+const organizerWindowSummary = document.getElementById('organizerWindowSummary');
+const emptyGroups = document.getElementById('emptyGroups');
+const inspectorColorDot = document.getElementById('inspectorColorDot');
+const inspectorOverline = document.getElementById('inspectorOverline');
+const inspectorTitle = document.getElementById('inspectorTitle');
+const organizerStatus = document.getElementById('organizerStatus');
+const organizeWindowButton = document.getElementById('organizeWindowButton');
+const groupInspectorEmpty = document.getElementById('groupInspectorEmpty');
+const selectedGroupContent = document.getElementById('selectedGroupContent');
+const selectedGroupTabLabel = document.getElementById('selectedGroupTabLabel');
+const selectedGroupTabCount = document.getElementById('selectedGroupTabCount');
+const selectedGroupStateLabel = document.getElementById('selectedGroupStateLabel');
+const selectedGroupCollapsed = document.getElementById('selectedGroupCollapsed');
+const selectedGroupColorLabel = document.getElementById('selectedGroupColorLabel');
+const selectedGroupColor = document.getElementById('selectedGroupColor');
+const groupTabsHeading = document.getElementById('groupTabsHeading');
+const groupTabsDescription = document.getElementById('groupTabsDescription');
+const selectedGroupTabs = document.getElementById('selectedGroupTabs');
+const groupEditAction = document.getElementById('groupEditAction');
+const editGroupButton = document.getElementById('editGroupButton');
+const groupReorganizeAction = document.getElementById('groupReorganizeAction');
+const reorganizeGroupButton = document.getElementById('reorganizeGroupButton');
+const organizerUndoHint = document.getElementById('organizerUndoHint');
+const organizeDialog = document.getElementById('organizeDialog');
+const organizeDialogOverline = document.getElementById('organizeDialogOverline');
+const organizeDialogTitle = document.getElementById('organizeDialogTitle');
+const organizeDialogDescription = document.getElementById('organizeDialogDescription');
+const cancelOrganizeButton = document.getElementById('cancelOrganizeButton');
+const confirmOrganizeButton = document.getElementById('confirmOrganizeButton');
+const groupEditDialog = document.getElementById('groupEditDialog');
+const groupEditNameInput = document.getElementById('groupEditNameInput');
+const groupEditColorOptions = document.getElementById('groupEditColorOptions');
+const groupEditCollapsedToggle = document.getElementById('groupEditCollapsedToggle');
+const groupEditStatus = document.getElementById('groupEditStatus');
+const cancelGroupEditButton = document.getElementById('cancelGroupEditButton');
+const saveGroupEditButton = document.getElementById('saveGroupEditButton');
 
-  function showToast(msg) {
-    toast.textContent = msg;
-    toast.classList.remove('hidden');
-    setTimeout(() => {
-      toast.classList.add('hidden');
-    }, 2500);
+let categories = [];
+let savedCategories = [];
+let uiTheme = clone(SmartTabTheme.DEFAULT_CONFIG);
+let savedUiTheme = clone(SmartTabTheme.DEFAULT_CONFIG);
+let organizeSettings = normalizeOrganizeSettings();
+let savedOrganizeSettings = normalizeOrganizeSettings();
+let selectedCategoryId = null;
+let selectedView = 'group';
+let dirty = false;
+let toastTimer = null;
+let activeWorkspace = window.location.hash === '#organizer' ? 'organizer' : 'settings';
+let organizerState = null;
+let selectedCurrentGroupId = null;
+let organizerLoading = false;
+let organizerRefreshTimer = null;
+let behaviorActionRunning = false;
+let organizerDialogMode = 'window';
+let pendingGroupReorganization = null;
+let organizerDialogReturnFocus = null;
+let pendingGroupEdit = null;
+let selectedGroupEditColor = 'grey';
+let groupEditSaving = false;
+
+document.addEventListener('DOMContentLoaded', initialize);
+
+async function initialize() {
+  previewBadge.hidden = !previewMode;
+  const stored = await storage.load();
+  categories = stored.categories;
+  uiTheme = SmartTabTheme.normalizeConfig(stored.uiTheme);
+  organizeSettings = normalizeOrganizeSettings(stored.settings);
+  savedCategories = clone(categories);
+  savedUiTheme = clone(uiTheme);
+  savedOrganizeSettings = clone(organizeSettings);
+  selectedCategoryId = categories[0]?.id || null;
+  applyUiTheme();
+
+  renderCategoryList();
+  renderEditor();
+  updateDirtyState();
+
+  workspacePickerButton.addEventListener('click', toggleWorkspaceMenu);
+  settingsWorkspaceOption.addEventListener('click', () => switchWorkspace('settings', { restoreFocus: true }));
+  organizerWorkspaceOption.addEventListener('click', () => switchWorkspace('organizer', { restoreFocus: true }));
+  behaviorNav.addEventListener('click', selectBehavior);
+  appearanceNav.addEventListener('click', selectAppearance);
+  addDomainButton.addEventListener('click', addDomainsFromInput);
+  domainInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ',') {
+      event.preventDefault();
+      addDomainsFromInput();
+    }
+  });
+  contentClassificationToggle.addEventListener('change', changeContentClassificationBehavior);
+  groupUnmatchedToggle.addEventListener('change', changeUnmatchedBehavior);
+  behaviorOrganizeButton.addEventListener('click', organizeFromBehaviorSettings);
+  saveButton.addEventListener('click', saveChanges);
+  discardButton.addEventListener('click', discardChanges);
+  refreshGroupsButton.addEventListener('click', () => loadOrganizerWorkspace({ announce: true }));
+  organizeWindowButton.addEventListener('click', () => openOrganizeDialog());
+  editGroupButton.addEventListener('click', openGroupEditDialog);
+  reorganizeGroupButton.addEventListener('click', openGroupReorganizationDialog);
+  cancelOrganizeButton.addEventListener('click', closeOrganizeDialog);
+  confirmOrganizeButton.addEventListener('click', confirmOrganizerDialog);
+  organizeDialog.addEventListener('cancel', (event) => {
+    if (cancelOrganizeButton.disabled) {
+      event.preventDefault();
+      return;
+    }
+    const returnFocus = organizerDialogReturnFocus;
+    resetOrganizerDialogState();
+    window.setTimeout(() => returnFocus?.focus({ preventScroll: true }), 0);
+  });
+  groupEditNameInput.addEventListener('input', () => {
+    groupEditStatus.textContent = '';
+    updateGroupEditControls();
+  });
+  groupEditCollapsedToggle.addEventListener('change', () => {
+    groupEditStatus.textContent = '';
+    updateGroupEditControls();
+  });
+  cancelGroupEditButton.addEventListener('click', closeGroupEditDialog);
+  saveGroupEditButton.addEventListener('click', saveSelectedGroupEdit);
+  groupEditDialog.addEventListener('cancel', (event) => {
+    if (groupEditSaving) {
+      event.preventDefault();
+      return;
+    }
+    resetGroupEditState();
+    window.setTimeout(() => {
+      editGroupButton.focus({ preventScroll: true });
+      scheduleOrganizerRefresh(0);
+    }, 0);
+  });
+  document.addEventListener('click', closeWorkspaceMenuFromOutside);
+  document.addEventListener('focusin', closeWorkspaceMenuFromFocus);
+  document.addEventListener('keydown', handleGlobalKeydown);
+  window.addEventListener('hashchange', () => {
+    switchWorkspace(window.location.hash === '#organizer' ? 'organizer' : 'settings', {
+      updateHash: false
+    });
+  });
+  await switchWorkspace(activeWorkspace, { updateHash: false });
+  setupOrganizerChangeListeners();
+
+  globalThis.matchMedia?.('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    applyUiTheme();
+    if (selectedView === 'appearance') renderThemePreviews();
+  });
+}
+
+function toggleWorkspaceMenu() {
+  const willOpen = workspaceMenu.hidden;
+  workspaceMenu.hidden = !willOpen;
+  workspacePickerButton.setAttribute('aria-expanded', String(willOpen));
+  if (willOpen) {
+    const current = activeWorkspace === 'organizer'
+      ? organizerWorkspaceOption
+      : settingsWorkspaceOption;
+    current.focus({ preventScroll: true });
+  }
+}
+
+function closeWorkspaceMenu() {
+  workspaceMenu.hidden = true;
+  workspacePickerButton.setAttribute('aria-expanded', 'false');
+}
+
+function closeWorkspaceMenuFromOutside(event) {
+  if (event.target.closest('.workspace-picker')) return;
+  closeWorkspaceMenu();
+}
+
+function closeWorkspaceMenuFromFocus(event) {
+  if (workspaceMenu.hidden || event.target.closest?.('.workspace-picker')) return;
+  closeWorkspaceMenu();
+}
+
+async function switchWorkspace(workspace, { updateHash = true, restoreFocus = false } = {}) {
+  activeWorkspace = workspace === 'organizer' ? 'organizer' : 'settings';
+  const showingOrganizer = activeWorkspace === 'organizer';
+  settingsWorkspace.hidden = showingOrganizer;
+  organizerWorkspace.hidden = !showingOrganizer;
+  workspaceTitle.textContent = showingOrganizer ? 'タブグループ整理' : '分類設定';
+  settingsWorkspaceOption.setAttribute('aria-checked', String(!showingOrganizer));
+  organizerWorkspaceOption.setAttribute('aria-checked', String(showingOrganizer));
+  document.title = `${workspaceTitle.textContent} — Smart Tab Grouper`;
+  closeWorkspaceMenu();
+
+  if (updateHash) {
+    const nextUrl = showingOrganizer
+      ? `${window.location.pathname}${window.location.search}#organizer`
+      : `${window.location.pathname}${window.location.search}`;
+    window.history.replaceState(null, '', nextUrl);
   }
 
-  // Load from Storage
-  async function loadData() {
-    const data = await chrome.storage.sync.get(['categories', 'settings']);
-    categories = data.categories || DEFAULT_CATEGORIES;
-    settings = data.settings || DEFAULT_SETTINGS;
+  if (restoreFocus) workspacePickerButton.focus({ preventScroll: true });
+  if (showingOrganizer) {
+    if (!dirty) setOrganizerStatus('');
+    await loadOrganizerWorkspace();
+    if (dirty) {
+      setOrganizerStatus('未保存の分類設定があります。保存するか戻してから分類できます。');
+    }
+  }
+}
 
-    optStrictDomainPriority.checked = settings.strictDomainPriority !== false;
-    optGroupPinned.checked = !!settings.groupPinnedTabs;
-    optDomainFallback.checked = !!settings.groupByDomainAsFallback;
-    optCollapseInactive.checked = !!settings.collapseInactiveGroups;
+function handleGlobalKeydown(event) {
+  if (organizeDialog.open || groupEditDialog.open) return;
+  if (!workspaceMenu.hidden && event.key === 'Tab') {
+    closeWorkspaceMenu();
+    return;
+  }
+  if (
+    !workspaceMenu.hidden
+    && (event.key === 'Enter' || event.key === ' ')
+    && [settingsWorkspaceOption, organizerWorkspaceOption].includes(document.activeElement)
+  ) {
+    event.preventDefault();
+    document.activeElement.click();
+    return;
+  }
+  if (!workspaceMenu.hidden && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    event.preventDefault();
+    const options = [settingsWorkspaceOption, organizerWorkspaceOption];
+    const currentIndex = options.indexOf(document.activeElement);
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? options.length - 1
+        : event.key === 'ArrowDown'
+          ? (currentIndex + 1 + options.length) % options.length
+          : (currentIndex - 1 + options.length) % options.length;
+    options[nextIndex].focus({ preventScroll: true });
+    return;
+  }
+  if (event.key === 'Escape' && !workspaceMenu.hidden) {
+    event.preventDefault();
+    closeWorkspaceMenu();
+    workspacePickerButton.focus({ preventScroll: true });
+    return;
+  }
+  if (
+    event.key.toLowerCase() === 'z'
+    && event.ctrlKey
+    && !event.altKey
+    && !event.shiftKey
+    && activeWorkspace === 'organizer'
+    && organizerState?.undo?.available
+    && !isEditableElement(event.target)
+  ) {
+    event.preventDefault();
+    undoOrganizerAction();
+  }
+}
 
-    txtExclusions.value = (settings.exclusions || []).join('\n');
+async function loadOrganizerWorkspace({ announce = false } = {}) {
+  if (organizerLoading) return;
+  organizerLoading = true;
+  refreshGroupsButton.disabled = true;
+  organizeWindowButton.disabled = true;
+  editGroupButton.disabled = true;
+  reorganizeGroupButton.disabled = true;
+  if (announce) setOrganizerStatus('更新しています…');
 
-    renderCategories();
+  try {
+    const previousSelection = selectedCurrentGroupId;
+    organizerState = await organizer.load();
+    const ungrouped = getUngroupedSelection();
+    const groupIds = new Set(organizerState.groups.map((group) => group.id));
+    if (ungrouped) groupIds.add(UNGROUPED_SELECTION_ID);
+    selectedCurrentGroupId = groupIds.has(previousSelection)
+      ? previousSelection
+      : ungrouped
+        ? UNGROUPED_SELECTION_ID
+        : organizerState.groups[0]?.id ?? null;
+    renderOrganizerWorkspace();
+    if (organizerState.inProgress) {
+      setOrganizerStatus('別の整理処理を実行しています。完了後に自動更新します。');
+      scheduleOrganizerRefresh(600);
+    } else if (organizerState.recovery?.recovered) {
+      setOrganizerStatus(
+        organizerState.recovery.committed
+          ? '前回の整理は完了済みです。Undoも引き続き利用できます。'
+          : '中断されていた前回の整理を安全に戻しました。',
+        (organizerState.recovery.errors?.length || 0) > 0
+      );
+    } else if (announce) {
+      setOrganizerStatus('現在の状態に更新しました。');
+    }
+  } catch (error) {
+    organizerState = { groups: [], tabs: [], preview: null, undo: null };
+    selectedCurrentGroupId = null;
+    renderOrganizerWorkspace();
+    setOrganizerStatus(error?.message || 'タブグループを確認できませんでした。', true);
+  } finally {
+    organizerLoading = false;
+    updateOrganizerControls();
+  }
+}
+
+function renderOrganizerWorkspace() {
+  const groups = organizerState?.groups || [];
+  const tabs = organizerState?.tabs || [];
+  const ungrouped = getUngroupedSelection();
+  const ungroupedCount = ungrouped?.totalCount || 0;
+  const targetCount = ungrouped?.tabIds.length || 0;
+  organizerWindowSummary.textContent = [
+    `${groups.length}グループ`,
+    `${tabs.length}タブ`,
+    ungroupedCount > 0
+      ? `未グループ ${ungroupedCount}（分類候補 ${targetCount}）`
+      : null
+  ].filter(Boolean).join('・');
+  emptyGroups.hidden = groups.length !== 0;
+  currentGroupList.replaceChildren();
+
+  if (ungrouped) renderCurrentGroupButton(ungrouped);
+
+  for (const group of groups) {
+    renderCurrentGroupButton(group);
   }
 
-  // Save Categories to Storage
-  async function saveCategories() {
-    await chrome.storage.sync.set({ categories });
-    renderCategories();
-    showToast("✅ カテゴリルールを保存しました");
+  organizerUndoHint.hidden = organizerState?.undo?.available !== true;
+  renderSelectedCurrentGroup();
+}
+
+function renderCurrentGroupButton(group) {
+  const color = getGroupColor(group.color);
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'current-group-item';
+  button.setAttribute('aria-current', String(group.id === selectedCurrentGroupId));
+  button.style.setProperty('--group-color', color.hex);
+
+  const dot = document.createElement('span');
+  dot.className = 'category-dot';
+  dot.setAttribute('aria-hidden', 'true');
+  const copy = document.createElement('span');
+  copy.className = 'category-copy';
+  const name = document.createElement('span');
+  name.className = 'category-name';
+  name.textContent = group.title || '名称なし';
+  const meta = document.createElement('span');
+  meta.className = 'category-meta';
+  meta.textContent = group.isUngrouped
+    ? `${group.totalCount}タブ・分類候補 ${group.tabIds.length}`
+    : `${group.tabIds?.length || 0}タブ・${color.label}${group.collapsed ? '・折りたたみ' : ''}${group.shared ? '・共有' : group.managed ? '・Smart Tab Grouper' : '・管理対象外'}`;
+  copy.append(name, meta);
+  const chevron = document.createElement('span');
+  chevron.className = 'category-chevron';
+  chevron.setAttribute('aria-hidden', 'true');
+  chevron.textContent = '›';
+  button.append(dot, copy, chevron);
+  button.addEventListener('click', () => selectCurrentGroup(group.id));
+  currentGroupList.append(button);
+}
+
+function selectCurrentGroup(groupId) {
+  selectedCurrentGroupId = groupId;
+  renderOrganizerWorkspace();
+  updateOrganizerControls();
+}
+
+function renderSelectedCurrentGroup() {
+  const group = selectedCurrentGroupId === UNGROUPED_SELECTION_ID
+    ? getUngroupedSelection()
+    : organizerState?.groups?.find((item) => item.id === selectedCurrentGroupId);
+  groupInspectorEmpty.hidden = Boolean(group);
+  selectedGroupContent.hidden = !group;
+  inspectorColorDot.hidden = !group;
+
+  if (!group) {
+    inspectorOverline.textContent = 'TAB GROUP';
+    inspectorTitle.textContent = 'タブグループを選択';
+    selectedGroupTabs.replaceChildren();
+    groupEditAction.hidden = true;
+    groupReorganizeAction.hidden = true;
+    return;
   }
 
-  // Save Settings to Storage
-  async function saveSettings() {
-    settings.strictDomainPriority = optStrictDomainPriority.checked;
-    settings.groupPinnedTabs = optGroupPinned.checked;
-    settings.groupByDomainAsFallback = optDomainFallback.checked;
-    settings.collapseInactiveGroups = optCollapseInactive.checked;
-    await chrome.storage.sync.set({ settings });
-    showToast("⚙️ 一般設定を保存しました");
+  const color = getGroupColor(group.color);
+  inspectorOverline.textContent = group.isUngrouped ? 'UNGROUPED TABS' : 'TAB GROUP';
+  inspectorTitle.textContent = group.title || '名称なし';
+  inspectorColorDot.style.setProperty('--group-color', color.hex);
+  selectedGroupTabLabel.textContent = group.isUngrouped ? '分類候補' : 'タブ';
+  selectedGroupTabCount.textContent = String(group.tabIds?.length || 0);
+  selectedGroupStateLabel.textContent = group.isUngrouped ? '対象外' : '表示';
+  selectedGroupCollapsed.textContent = group.isUngrouped
+    ? String(Math.max(0, group.totalCount - group.tabIds.length))
+    : group.collapsed ? '折りたたみ' : '展開';
+  selectedGroupColorLabel.textContent = group.isUngrouped ? '状態' : '色';
+  selectedGroupColor.textContent = group.isUngrouped ? '未整理' : color.label;
+  groupTabsHeading.textContent = group.isUngrouped ? '今回の分類候補' : 'グループ内のタブ';
+  groupTabsDescription.textContent = group.isUngrouped
+    ? '保存済みルールで分類できるタブと、補助分類を使う場合の候補です。'
+    : group.shared
+      ? '共有タブグループです。現在は安全のため、この画面から変更しません。'
+      : `現在の並び順です。${group.managed ? 'この拡張機能が管理しているグループです。' : 'この拡張機能の管理対象外です。'}`;
+  groupEditAction.hidden = group.isUngrouped || group.shared;
+  groupReorganizeAction.hidden = group.isUngrouped || group.shared;
+  selectedGroupTabs.replaceChildren();
+
+  const tabById = new Map((organizerState.tabs || []).map((tab) => [tab.id, tab]));
+  for (const tabId of group.tabIds || []) {
+    const tab = tabById.get(tabId);
+    if (!tab) continue;
+    const row = document.createElement('div');
+    row.className = 'selected-group-tab';
+    const index = document.createElement('span');
+    index.className = 'selected-group-tab-index';
+    index.textContent = String(selectedGroupTabs.childElementCount + 1);
+    const copy = document.createElement('span');
+    copy.className = 'selected-group-tab-copy';
+    const title = document.createElement('strong');
+    title.textContent = tab.title || '無題のタブ';
+    const host = document.createElement('small');
+    host.textContent = getHostnameForDisplay(tab.url);
+    copy.append(title, host);
+    row.append(index, copy);
+    selectedGroupTabs.append(row);
+  }
+}
+
+function getUngroupedSelection() {
+  if (!organizerState) return null;
+  const ungroupedTabs = (organizerState.tabs || []).filter((tab) => tab.groupId === -1);
+  if (ungroupedTabs.length === 0) return null;
+  const preview = organizerState.preview || {};
+  const targetIds = new Set(preview.targetTabIds || []);
+  if (contentAssistMayAdd(preview)) {
+    for (const tabId of preview.unresolvedTabIds || []) targetIds.add(tabId);
+  }
+  return {
+    id: UNGROUPED_SELECTION_ID,
+    title: '未グループ',
+    color: 'grey',
+    collapsed: false,
+    isUngrouped: true,
+    totalCount: ungroupedTabs.length,
+    tabIds: ungroupedTabs.filter((tab) => targetIds.has(tab.id)).map((tab) => tab.id)
+  };
+}
+
+async function openOrganizeDialog({ refresh = true } = {}) {
+  if (dirty) {
+    setOrganizerStatus('分類設定を保存するか破棄してから実行してください。', true);
+    return;
+  }
+  if (refresh) await loadOrganizerWorkspace();
+  if (organizerState?.inProgress) return;
+  const preview = organizerState?.preview;
+  const count = Number(preview?.count) || 0;
+  const groupCount = Number(preview?.groupCount) || 0;
+  const contentMayAdd = contentAssistMayAdd(preview);
+  organizerDialogMode = 'window';
+  pendingGroupReorganization = null;
+  organizerDialogReturnFocus = organizeWindowButton;
+  organizeDialogOverline.textContent = 'UNGROUPED TABS';
+  organizeDialogTitle.textContent = '本当に整理しますか？';
+  organizeDialogDescription.textContent = count > 0
+    ? `${count}件の未グループタブを${groupCount}グループへ分類する予定です。${preview?.contentClassificationEnabled && preview?.unresolved > 0 ? ' 補助分類により対象が増える場合があります。' : ''}`
+    : contentMayAdd
+      ? '補助分類で未グループタブを確認し、対象が見つかった場合だけ分類します。'
+      : '現在の設定で分類できる未グループタブはありません。';
+  confirmOrganizeButton.textContent = '整理';
+  confirmOrganizeButton.disabled = count === 0 && !contentMayAdd;
+  if (typeof organizeDialog.showModal === 'function') organizeDialog.showModal();
+  else organizeDialog.setAttribute('open', '');
+  cancelOrganizeButton.focus({ preventScroll: true });
+}
+
+async function openGroupReorganizationDialog() {
+  if (dirty) {
+    setOrganizerStatus('分類設定を保存するか破棄してから実行してください。', true);
+    return;
+  }
+  const group = getSelectedOrganizerGroup();
+  if (!group || group.isUngrouped || group.tabIds.length < 2 || organizerLoading) return;
+
+  reorganizeGroupButton.disabled = true;
+  setOrganizerStatus('再構成案を確認しています…');
+  try {
+    const preview = await organizer.previewGroup(organizerState.windowId, group.id);
+    if (!preview?.success) throw new Error(preview?.message || '再構成案を確認できませんでした。');
+    if (selectedCurrentGroupId !== group.id) {
+      setOrganizerStatus('選択が変わったため、再構成案を閉じました。');
+      return;
+    }
+
+    organizerDialogMode = 'group';
+    pendingGroupReorganization = preview;
+    organizerDialogReturnFocus = reorganizeGroupButton;
+    organizeDialogOverline.textContent = 'SELECTED GROUP';
+    organizeDialogTitle.textContent = `「${preview.title}」を再構成しますか？`;
+    organizeDialogDescription.textContent = preview.movedCount > 0
+      ? `${preview.retainedCount}件は元のグループに残し、${preview.movedCount}件を${preview.targetGroupCount}グループへ移します。${preview.newGroupCount > 0 ? `新しいグループを${preview.newGroupCount}個作ります。` : '既存の管理グループを使います。'} 判定できないタブは残します。`
+      : '現在の分類設定では、分け直す必要のあるタブは見つかりませんでした。判定できないタブは元のグループに残します。';
+    confirmOrganizeButton.textContent = '再構成';
+    confirmOrganizeButton.disabled = preview.movedCount === 0;
+    if (typeof organizeDialog.showModal === 'function') organizeDialog.showModal();
+    else organizeDialog.setAttribute('open', '');
+    cancelOrganizeButton.focus({ preventScroll: true });
+    setOrganizerStatus('');
+  } catch (error) {
+    setOrganizerStatus(error?.message || '再構成案を確認できませんでした。', true);
+  } finally {
+    updateOrganizerControls();
+  }
+}
+
+function openGroupEditDialog() {
+  if (dirty) {
+    setOrganizerStatus('分類設定を保存するか破棄してから編集してください。', true);
+    return;
+  }
+  const group = getSelectedOrganizerGroup();
+  if (!group || group.isUngrouped || group.shared || organizerLoading) return;
+
+  pendingGroupEdit = {
+    groupId: group.id,
+    expectedFingerprint: {
+      groupId: group.id,
+      windowId: organizerState.windowId,
+      title: group.title || '',
+      color: group.color || 'grey',
+      collapsed: group.collapsed === true,
+      shared: group.shared === true
+    },
+    initial: {
+      title: group.title || '',
+      color: group.color || 'grey',
+      collapsed: group.collapsed === true
+    }
+  };
+  selectedGroupEditColor = pendingGroupEdit.initial.color;
+  groupEditNameInput.value = pendingGroupEdit.initial.title;
+  groupEditCollapsedToggle.checked = pendingGroupEdit.initial.collapsed;
+  groupEditStatus.textContent = '';
+  renderGroupEditColors();
+  updateGroupEditControls();
+  if (typeof groupEditDialog.showModal === 'function') groupEditDialog.showModal();
+  else groupEditDialog.setAttribute('open', '');
+  groupEditNameInput.focus({ preventScroll: true });
+  groupEditNameInput.select();
+}
+
+function renderGroupEditColors() {
+  groupEditColorOptions.replaceChildren();
+  for (let index = 0; index < GROUP_COLORS.length; index += 1) {
+    const color = GROUP_COLORS[index];
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'group-edit-color-option';
+    button.setAttribute('role', 'radio');
+    button.setAttribute('aria-checked', String(color.value === selectedGroupEditColor));
+    button.setAttribute('aria-label', color.label);
+    button.tabIndex = color.value === selectedGroupEditColor ? 0 : -1;
+    button.dataset.color = color.value;
+    button.title = color.label;
+    button.style.setProperty('--group-color', color.hex);
+    button.addEventListener('click', () => selectGroupEditColor(color.value));
+    button.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const nextIndex = event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? GROUP_COLORS.length - 1
+          : event.key === 'ArrowRight' || event.key === 'ArrowDown'
+            ? (index + 1) % GROUP_COLORS.length
+            : (index - 1 + GROUP_COLORS.length) % GROUP_COLORS.length;
+      selectGroupEditColor(GROUP_COLORS[nextIndex].value);
+    });
+    groupEditColorOptions.append(button);
+  }
+}
+
+function selectGroupEditColor(value) {
+  selectedGroupEditColor = value;
+  groupEditStatus.textContent = '';
+  renderGroupEditColors();
+  updateGroupEditControls();
+  groupEditColorOptions
+    .querySelector(`[data-color="${value}"]`)
+    ?.focus({ preventScroll: true });
+}
+
+function updateGroupEditControls() {
+  if (!pendingGroupEdit) {
+    saveGroupEditButton.disabled = true;
+    return;
+  }
+  const draft = getGroupEditDraft();
+  const changed = JSON.stringify(draft) !== JSON.stringify(pendingGroupEdit.initial);
+  saveGroupEditButton.disabled = groupEditSaving || !changed;
+  cancelGroupEditButton.disabled = groupEditSaving;
+  groupEditNameInput.disabled = groupEditSaving;
+  groupEditCollapsedToggle.disabled = groupEditSaving;
+  for (const button of groupEditColorOptions.querySelectorAll('button')) {
+    button.disabled = groupEditSaving;
+  }
+}
+
+function getGroupEditDraft() {
+  return {
+    title: groupEditNameInput.value.trim(),
+    color: selectedGroupEditColor,
+    collapsed: groupEditCollapsedToggle.checked
+  };
+}
+
+async function saveSelectedGroupEdit() {
+  if (!pendingGroupEdit || groupEditSaving) return;
+  const edit = pendingGroupEdit;
+  groupEditSaving = true;
+  groupEditStatus.textContent = '保存しています…';
+  updateGroupEditControls();
+  try {
+    const result = await organizer.editGroup(
+      organizerState.windowId,
+      edit.groupId,
+      edit.expectedFingerprint,
+      getGroupEditDraft()
+    );
+    if (!result?.success) throw new Error(result?.message || 'グループを編集できませんでした。');
+    groupEditSaving = false;
+    closeGroupEditDialog();
+    await loadOrganizerWorkspace();
+    setOrganizerStatus(result.message || 'グループの表示を変更しました。');
+  } catch (error) {
+    groupEditStatus.textContent = error?.message || 'グループを編集できませんでした。';
+  } finally {
+    groupEditSaving = false;
+    updateGroupEditControls();
+  }
+}
+
+function closeGroupEditDialog() {
+  if (groupEditSaving) return;
+  if (typeof groupEditDialog.close === 'function') groupEditDialog.close();
+  else groupEditDialog.removeAttribute('open');
+  resetGroupEditState();
+  editGroupButton.focus({ preventScroll: true });
+  scheduleOrganizerRefresh(0);
+}
+
+function resetGroupEditState() {
+  pendingGroupEdit = null;
+  selectedGroupEditColor = 'grey';
+  groupEditSaving = false;
+  groupEditStatus.textContent = '';
+  groupEditNameInput.disabled = false;
+  groupEditCollapsedToggle.disabled = false;
+  cancelGroupEditButton.disabled = false;
+  saveGroupEditButton.disabled = true;
+}
+
+function closeOrganizeDialog() {
+  const returnFocus = organizerDialogReturnFocus;
+  if (typeof organizeDialog.close === 'function') organizeDialog.close();
+  else organizeDialog.removeAttribute('open');
+  resetOrganizerDialogState();
+  returnFocus?.focus({ preventScroll: true });
+}
+
+function resetOrganizerDialogState() {
+  organizerDialogMode = 'window';
+  pendingGroupReorganization = null;
+  organizerDialogReturnFocus = null;
+}
+
+function confirmOrganizerDialog() {
+  return organizerDialogMode === 'group'
+    ? reorganizeSelectedGroupFromSettings()
+    : organizeCurrentWindowFromSettings();
+}
+
+async function organizeCurrentWindowFromSettings() {
+  confirmOrganizeButton.disabled = true;
+  cancelOrganizeButton.disabled = true;
+  organizeDialogDescription.textContent = '整理しています…';
+  try {
+    const result = await organizer.organize(organizerState?.windowId);
+    if (!result?.success) throw new Error(result?.message || '整理できませんでした。');
+    closeOrganizeDialog();
+    await loadOrganizerWorkspace();
+    setOrganizerStatus(result.message || `${result.count || 0}件を整理しました。`);
+  } catch (error) {
+    organizeDialogDescription.textContent = error?.message || '整理できませんでした。';
+  } finally {
+    cancelOrganizeButton.disabled = false;
+    updateOrganizerControls();
+  }
+}
+
+async function reorganizeSelectedGroupFromSettings() {
+  const preview = pendingGroupReorganization;
+  if (!preview) return;
+  confirmOrganizeButton.disabled = true;
+  cancelOrganizeButton.disabled = true;
+  organizeDialogDescription.textContent = '再構成しています…';
+  try {
+    const result = await organizer.reorganizeGroup(
+      organizerState?.windowId,
+      preview.groupId,
+      preview.fingerprint
+    );
+    if (!result?.success) throw new Error(result?.message || 'グループを再構成できませんでした。');
+    closeOrganizeDialog();
+    await loadOrganizerWorkspace();
+    setOrganizerStatus(result.message || `${result.count || 0}件を分け直しました。`);
+  } catch (error) {
+    organizeDialogDescription.textContent = error?.message || 'グループを再構成できませんでした。';
+  } finally {
+    cancelOrganizeButton.disabled = false;
+    updateOrganizerControls();
+  }
+}
+
+async function undoOrganizerAction() {
+  if (
+    !organizerState?.undo?.available
+    || organizerLoading
+    || organizeDialog.open
+    || groupEditDialog.open
+    || !workspaceMenu.hidden
+  ) return;
+  organizerState.undo = null;
+  organizerUndoHint.hidden = true;
+  setOrganizerStatus('元に戻しています…');
+  try {
+    const result = await organizer.undo(organizerState.windowId);
+    if (!result?.success) throw new Error(result?.message || '元に戻せませんでした。');
+    await loadOrganizerWorkspace();
+    setOrganizerStatus(result.message);
+  } catch (error) {
+    await loadOrganizerWorkspace();
+    setOrganizerStatus(error?.message || '元に戻せませんでした。', true);
+  }
+}
+
+function setOrganizerStatus(message, error = false) {
+  organizerStatus.textContent = message || '';
+  organizerStatus.classList.toggle('is-error', error);
+}
+
+function updateOrganizerControls() {
+  const previewCount = Number(organizerState?.preview?.count) || 0;
+  const hasPotentialTargets = hasOrganizerPotentialTargets();
+  const blocked = organizerLoading || dirty || organizerState?.inProgress === true;
+  refreshGroupsButton.disabled = organizerLoading;
+  organizeWindowButton.disabled = blocked || !hasPotentialTargets;
+  const selectedGroup = getSelectedOrganizerGroup();
+  const canReorganizeGroup = Boolean(
+    selectedGroup
+    && !selectedGroup.isUngrouped
+    && !selectedGroup.shared
+    && (selectedGroup.tabIds?.length || 0) >= 2
+  );
+  const canEditGroup = Boolean(
+    selectedGroup
+    && !selectedGroup.isUngrouped
+    && !selectedGroup.shared
+  );
+  editGroupButton.disabled = blocked || !canEditGroup;
+  reorganizeGroupButton.disabled = blocked || !canReorganizeGroup;
+  organizeWindowButton.title = dirty
+    ? '分類設定を保存するか破棄してから実行できます'
+    : organizerState?.inProgress
+      ? '別の整理処理を実行しています'
+      : !hasPotentialTargets
+        ? '現在の設定で分類できる未グループタブはありません'
+        : '';
+  confirmOrganizeButton.disabled = organizerDialogMode === 'group' && organizeDialog.open
+    ? blocked || !(pendingGroupReorganization?.movedCount > 0)
+    : blocked || !hasPotentialTargets;
+  reorganizeGroupButton.title = dirty
+    ? '分類設定を保存するか破棄してから実行できます'
+    : organizerState?.inProgress
+      ? '別の整理処理を実行しています'
+      : !canReorganizeGroup
+        ? selectedGroup?.shared
+          ? '共有グループは現在の変更対象外です'
+          : '2件以上のタブがあるグループを選んでください'
+        : '';
+  editGroupButton.title = dirty
+    ? '分類設定を保存するか破棄してから編集できます'
+    : organizerState?.inProgress
+      ? '別の整理処理を実行しています'
+      : selectedGroup?.shared
+        ? '共有グループは現在の変更対象外です'
+        : !canEditGroup
+          ? '編集するグループを選んでください'
+          : '';
+}
+
+function getSelectedOrganizerGroup() {
+  if (selectedCurrentGroupId === UNGROUPED_SELECTION_ID) return getUngroupedSelection();
+  return organizerState?.groups?.find((item) => item.id === selectedCurrentGroupId) || null;
+}
+
+function hasOrganizerPotentialTargets() {
+  return (Number(organizerState?.preview?.count) || 0) > 0
+    || contentAssistMayAdd(organizerState?.preview);
+}
+
+function contentAssistMayAdd(preview) {
+  return preview?.contentClassificationEnabled === true
+    && preview?.contentLimitExceeded !== true
+    && Number(preview?.unresolved) > 0;
+}
+
+function setupOrganizerChangeListeners() {
+  if (previewMode || !globalThis.chrome?.tabs || !globalThis.chrome?.tabGroups) return;
+  const schedule = () => scheduleOrganizerRefresh(180);
+  chrome.tabs.onCreated?.addListener(schedule);
+  chrome.tabs.onRemoved?.addListener(schedule);
+  chrome.tabs.onUpdated?.addListener(schedule);
+  chrome.tabs.onMoved?.addListener(schedule);
+  chrome.tabs.onAttached?.addListener(schedule);
+  chrome.tabs.onDetached?.addListener(schedule);
+  chrome.tabGroups.onCreated?.addListener(schedule);
+  chrome.tabGroups.onRemoved?.addListener(schedule);
+  chrome.tabGroups.onUpdated?.addListener(schedule);
+  chrome.tabGroups.onMoved?.addListener(schedule);
+  chrome.storage.onChanged?.addListener((changes, areaName) => {
+    if (
+      (areaName === 'sync' && (changes.categories || changes.settings))
+      || (areaName === 'local' && changes[MANAGED_GROUPS_STORAGE_KEY])
+      || areaName === 'session'
+    ) schedule();
+  });
+}
+
+function scheduleOrganizerRefresh(delay = 180) {
+  clearTimeout(organizerRefreshTimer);
+  organizerRefreshTimer = setTimeout(() => {
+    organizerRefreshTimer = null;
+    if (activeWorkspace === 'organizer' && !organizeDialog.open && !groupEditDialog.open) {
+      loadOrganizerWorkspace();
+    }
+  }, delay);
+}
+
+function getHostnameForDisplay(rawUrl) {
+  try {
+    return new URL(rawUrl).hostname || rawUrl;
+  } catch (error) {
+    return rawUrl || '';
+  }
+}
+
+function isEditableElement(target) {
+  return target instanceof HTMLElement
+    && (target.matches('input, textarea, select') || target.isContentEditable);
+}
+
+function renderCategoryList() {
+  categoryCount.textContent = String(categories.length);
+  categoryList.replaceChildren();
+
+  for (const category of categories) {
+    const color = getGroupColor(category.color);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'category-item';
+    button.dataset.categoryId = category.id;
+    button.setAttribute('aria-current', String(
+      selectedView === 'group' && category.id === selectedCategoryId
+    ));
+    button.style.setProperty('--group-color', color.hex);
+
+    const dot = document.createElement('span');
+    dot.className = 'category-dot';
+    dot.setAttribute('aria-hidden', 'true');
+
+    const copy = document.createElement('span');
+    copy.className = 'category-copy';
+    const name = document.createElement('span');
+    name.className = 'category-name';
+    name.textContent = category.name;
+    const meta = document.createElement('span');
+    meta.className = 'category-meta';
+    meta.textContent = `${category.domains?.length || 0} ドメイン・${color.label}`;
+    copy.append(name, meta);
+
+    const chevron = document.createElement('span');
+    chevron.className = 'category-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    chevron.textContent = '›';
+
+    button.append(dot, copy, chevron);
+    button.addEventListener('click', () => selectCategory(category.id));
+    categoryList.append(button);
+  }
+}
+
+function renderEditor() {
+  const showingAppearance = selectedView === 'appearance';
+  const showingBehavior = selectedView === 'behavior';
+  appearanceNav.setAttribute('aria-current', String(showingAppearance));
+  behaviorNav.setAttribute('aria-current', String(showingBehavior));
+  appearanceEditor.hidden = !showingAppearance;
+  behaviorEditor.hidden = !showingBehavior;
+  groupEditor.hidden = showingAppearance || showingBehavior;
+  appearanceEditorIcon.hidden = !showingAppearance;
+  behaviorEditorIcon.hidden = !showingBehavior;
+  selectedColorDot.hidden = showingAppearance || showingBehavior;
+
+  if (showingAppearance) {
+    editorOverline.textContent = 'APPEARANCE';
+    editorTitle.textContent = '外観';
+    renderThemeOptions();
+    return;
   }
 
-  // Save Exclusions
-  btnSaveExclusions.addEventListener('click', async () => {
-    const parseList = (str) => str.split(/[\n,]/).map(s => s.trim()).filter(Boolean);
-    settings.exclusions = parseList(txtExclusions.value);
-    await chrome.storage.sync.set({ settings });
-    showToast("🚫 除外リストを保存しました");
+  if (showingBehavior) {
+    editorOverline.textContent = 'ORGANIZE';
+    editorTitle.textContent = '整理の動作';
+    renderBehaviorSettings();
+    return;
+  }
+
+  const category = getSelectedCategory();
+  if (!category) return;
+
+  const color = getGroupColor(category.color);
+  editorOverline.textContent = 'EDIT GROUP';
+  editorTitle.textContent = category.name;
+  selectedColorDot.style.setProperty('--group-color', color.hex);
+  domainFeedback.textContent = '';
+  domainFeedback.classList.remove('is-success');
+  renderDomains(category);
+  renderColors(category);
+}
+
+function renderBehaviorSettings() {
+  contentClassificationToggle.checked = organizeSettings.contentClassificationEnabled;
+  groupUnmatchedToggle.checked = organizeSettings.groupUnmatchedAsOthers;
+  updateBehaviorOrganizeButton();
+}
+
+async function organizeFromBehaviorSettings() {
+  if (behaviorActionRunning) return;
+  behaviorActionRunning = true;
+  updateBehaviorOrganizeButton();
+  try {
+    if (dirty && !(await saveChanges())) return;
+    await switchWorkspace('organizer');
+    if (organizerState?.inProgress) {
+      setOrganizerStatus('別の整理処理を実行しています。完了後に自動更新します。');
+      return;
+    }
+    if (!hasOrganizerPotentialTargets()) {
+      setOrganizerStatus('現在の設定で分類できる未グループタブはありません。');
+      organizeWindowButton.focus({ preventScroll: true });
+      return;
+    }
+    await openOrganizeDialog({ refresh: false });
+  } finally {
+    behaviorActionRunning = false;
+    updateBehaviorOrganizeButton();
+  }
+}
+
+function renderDomains(category) {
+  domainList.replaceChildren();
+  const domains = category.domains || [];
+  emptyDomains.hidden = domains.length !== 0;
+
+  for (const domain of domains) {
+    const chip = document.createElement('span');
+    chip.className = 'domain-chip';
+    const text = document.createElement('span');
+    text.textContent = domain;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'remove-domain';
+    remove.setAttribute('aria-label', `${domain} を削除`);
+    remove.title = '削除';
+    remove.textContent = '×';
+    remove.addEventListener('click', () => removeDomain(domain));
+    chip.append(text, remove);
+    domainList.append(chip);
+  }
+}
+
+function renderColors(category) {
+  colorOptions.replaceChildren();
+
+  for (const color of GROUP_COLORS) {
+    const label = document.createElement('label');
+    label.className = 'color-option';
+    label.classList.toggle('is-selected', category.color === color.value);
+    label.style.setProperty('--group-color', color.hex);
+
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = 'groupColor';
+    input.value = color.value;
+    input.checked = category.color === color.value;
+    input.addEventListener('change', () => changeColor(color.value));
+
+    const swatch = document.createElement('span');
+    swatch.className = 'color-swatch';
+    swatch.setAttribute('aria-hidden', 'true');
+    const text = document.createElement('span');
+    text.className = 'color-label';
+    text.textContent = color.label;
+
+    label.append(input, swatch, text);
+    colorOptions.append(label);
+  }
+}
+
+function renderThemeOptions() {
+  const definitions = [
+    ...Object.entries(SmartTabTheme.PRESET_META).map(([value, meta]) => ({
+      value,
+      label: meta.label,
+      description: meta.description,
+      config: { mode: 'preset', preset: value, seed: uiTheme.seed }
+    })),
+    {
+      value: 'custom',
+      label: 'カスタム',
+      description: '基準色1色から自動生成',
+      config: { mode: 'custom', preset: 'custom', seed: uiTheme.seed }
+    }
+  ];
+
+  themeOptions.replaceChildren();
+  for (const definition of definitions) {
+    const selected = uiTheme.mode === 'custom'
+      ? definition.value === 'custom'
+      : definition.value === uiTheme.preset;
+
+    const option = document.createElement('div');
+    option.className = 'theme-option';
+    option.classList.toggle('is-selected', selected);
+    option.dataset.themeOption = definition.value;
+
+    const input = document.createElement('input');
+    input.id = `uiTheme-${definition.value}`;
+    input.type = 'radio';
+    input.name = 'uiTheme';
+    input.value = definition.value;
+    input.checked = selected;
+    input.setAttribute('aria-label', `${definition.label} ${definition.description}`);
+    input.addEventListener('change', () => selectUiTheme(definition.value));
+
+    const selectionLabel = document.createElement('label');
+    selectionLabel.className = 'theme-option-select';
+    selectionLabel.htmlFor = input.id;
+
+    const previewPair = createThemePreviewPair(definition.config);
+    const copy = document.createElement('span');
+    copy.className = 'theme-option-copy';
+    const name = document.createElement('strong');
+    name.textContent = definition.label;
+    const description = document.createElement('small');
+    description.textContent = definition.description;
+    copy.append(name, description);
+
+    const check = document.createElement('span');
+    check.className = 'theme-check';
+    check.setAttribute('aria-hidden', 'true');
+    check.textContent = '✓';
+
+    selectionLabel.append(previewPair, copy, check);
+    option.append(input, selectionLabel);
+
+    if (definition.value === 'custom') {
+      option.append(createCustomInlineControls());
+    }
+    themeOptions.append(option);
+  }
+}
+
+function createCustomInlineControls() {
+  const controls = document.createElement('span');
+  controls.className = 'custom-inline-controls';
+
+  const title = document.createElement('span');
+  title.textContent = 'カスタム';
+
+  const picker = document.createElement('input');
+  picker.type = 'color';
+  picker.value = uiTheme.seed;
+  picker.setAttribute('aria-label', 'カスタム基準色');
+  picker.addEventListener('input', (event) => updateCustomSeed(event.target.value));
+
+  const code = document.createElement('input');
+  code.type = 'text';
+  code.className = 'custom-seed-code';
+  code.value = uiTheme.seed.toUpperCase();
+  code.maxLength = 7;
+  code.spellcheck = false;
+  code.autocomplete = 'off';
+  code.setAttribute('aria-label', 'カスタム色コード');
+  code.addEventListener('input', (event) => {
+    const normalized = SmartTabTheme.normalizeHex(event.target.value);
+    event.target.setAttribute('aria-invalid', String(!normalized));
+    if (normalized) updateCustomSeed(normalized, event.target);
+  });
+  code.addEventListener('blur', (event) => {
+    const normalized = SmartTabTheme.normalizeHex(event.target.value);
+    event.target.value = (normalized || uiTheme.seed).toUpperCase();
+    event.target.setAttribute('aria-invalid', 'false');
   });
 
-  // Render Categories List
-  function renderCategories() {
-    categoryContainer.innerHTML = '';
+  controls.append(title, picker, code);
+  return controls;
+}
 
-    categories.forEach((cat, index) => {
-      const card = document.createElement('div');
-      card.className = `category-card-item cat-border-${cat.color || 'grey'}`;
-      if (!cat.enabled) card.style.opacity = '0.5';
+function createThemePreviewPair(config) {
+  const pair = document.createElement('span');
+  pair.className = 'theme-preview-pair';
+  pair.setAttribute('aria-hidden', 'true');
+  pair.append(
+    createThemeMini(config, 'light'),
+    createThemeMini(config, 'dark')
+  );
+  return pair;
+}
 
-      const domainChips = (cat.domains || []).slice(0, 8).map(d => `<span class="chip">${escapeHtml(d)}</span>`).join('');
-      const domainMore = (cat.domains || []).length > 8 ? `<span class="chip">+${cat.domains.length - 8}</span>` : '';
+function createThemeMini(config, resolvedTheme) {
+  const tokens = SmartTabTheme.getTokens(config, resolvedTheme).tokens;
+  const mini = document.createElement('span');
+  mini.className = 'theme-mini';
+  mini.style.setProperty('--mini-header', tokens.header);
+  mini.style.setProperty('--mini-container', tokens.baseContainer);
+  mini.style.setProperty('--mini-surface', tokens.baseContainerElevated);
+  mini.style.setProperty('--mini-primary', tokens.primary);
 
-      const keywordChips = (cat.titleKeywords || []).slice(0, 6).map(k => `<span class="chip">${escapeHtml(k)}</span>`).join('');
-      const keywordMore = (cat.titleKeywords || []).length > 6 ? `<span class="chip">+${cat.titleKeywords.length - 6}</span>` : '';
+  const tab = document.createElement('i');
+  tab.className = 'theme-mini-tab';
+  const card = document.createElement('i');
+  card.className = 'theme-mini-card';
+  const button = document.createElement('i');
+  button.className = 'theme-mini-button';
+  mini.append(tab, card, button);
+  return mini;
+}
 
-      card.innerHTML = `
-        <div class="cat-item-top">
-          <div class="cat-title-badge">
-            <span class="cat-title">${escapeHtml(cat.name)}</span>
-            <span class="cat-color-tag">${cat.color || 'grey'}</span>
-          </div>
-          <div class="cat-item-controls">
-            <button class="btn btn-outline btn-sm btn-toggle" data-index="${index}">
-              ${cat.enabled ? '🟢 有効' : '⚪ 無効'}
-            </button>
-            <button class="btn btn-outline btn-sm btn-up" data-index="${index}" ${index === 0 ? 'disabled' : ''}>▲</button>
-            <button class="btn btn-outline btn-sm btn-down" data-index="${index}" ${index === categories.length - 1 ? 'disabled' : ''}>▼</button>
-            <button class="btn btn-outline btn-sm btn-edit" data-index="${index}">✏️ 編集</button>
-            <button class="btn btn-danger btn-sm btn-delete" data-index="${index}">🗑️</button>
-          </div>
-        </div>
+function renderThemePreviews() {
+  for (const option of themeOptions.querySelectorAll('.theme-option')) {
+    const value = option.dataset.themeOption;
+    const config = value === 'custom'
+      ? { mode: 'custom', preset: 'custom', seed: uiTheme.seed }
+      : { mode: 'preset', preset: value, seed: uiTheme.seed };
+    option.querySelector('.theme-preview-pair')?.replaceWith(createThemePreviewPair(config));
+  }
+}
 
-        <div class="cat-rules-preview">
-          <div class="tag-group">
-            <span class="tag-group-label">ドメイン:</span>
-            ${domainChips}${domainMore}
-          </div>
-          <div class="tag-group">
-            <span class="tag-group-label">キーワード:</span>
-            ${keywordChips}${keywordMore}
-          </div>
-        </div>
-      `;
+function selectUiTheme(value) {
+  uiTheme = value === 'custom'
+    ? { mode: 'custom', preset: 'custom', seed: uiTheme.seed }
+    : { mode: 'preset', preset: value, seed: uiTheme.seed };
+  applyUiTheme();
+  renderThemeOptions();
+  markDirty();
+}
 
-      categoryContainer.appendChild(card);
-    });
+function updateCustomSeed(value, sourceInput = null) {
+  const seed = SmartTabTheme.normalizeHex(value);
+  if (!seed) return;
+  uiTheme = { mode: 'custom', preset: 'custom', seed };
+  const controls = themeOptions.querySelector('.custom-inline-controls');
+  const picker = controls?.querySelector('input[type="color"]');
+  const code = controls?.querySelector('.custom-seed-code');
+  if (picker && picker !== sourceInput) picker.value = seed;
+  if (code && code !== sourceInput) {
+    code.value = seed.toUpperCase();
+    code.setAttribute('aria-invalid', 'false');
+  }
+  applyUiTheme();
+  renderThemePreviews();
+  markDirty();
+}
 
-    attachCategoryEvents();
+function applyUiTheme() {
+  SmartTabTheme.apply(uiTheme);
+}
+
+function selectCategory(categoryId) {
+  selectedView = 'group';
+  selectedCategoryId = categoryId;
+  renderCategoryList();
+  renderEditor();
+}
+
+function selectAppearance() {
+  selectedView = 'appearance';
+  renderCategoryList();
+  renderEditor();
+}
+
+function selectBehavior() {
+  selectedView = 'behavior';
+  renderCategoryList();
+  renderEditor();
+}
+
+function changeUnmatchedBehavior(event) {
+  organizeSettings.groupUnmatchedAsOthers = event.target.checked;
+  renderBehaviorSettings();
+  markDirty();
+}
+
+function changeContentClassificationBehavior(event) {
+  organizeSettings.contentClassificationEnabled = event.target.checked;
+  renderBehaviorSettings();
+  markDirty();
+}
+
+function addDomainsFromInput() {
+  const rawItems = domainInput.value.split(/[\s,]+/).filter(Boolean);
+  if (rawItems.length === 0) {
+    showDomainFeedback('追加するドメインを入力してください。');
+    return;
   }
 
-  function attachCategoryEvents() {
-    document.querySelectorAll('.btn-toggle').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const idx = e.target.dataset.index;
-        categories[idx].enabled = !categories[idx].enabled;
-        saveCategories();
-      });
-    });
+  const category = getSelectedCategory();
+  const added = [];
 
-    document.querySelectorAll('.btn-up').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const idx = parseInt(e.target.dataset.index);
-        if (idx > 0) {
-          const temp = categories[idx];
-          categories[idx] = categories[idx - 1];
-          categories[idx - 1] = temp;
-          saveCategories();
-        }
-      });
-    });
-
-    document.querySelectorAll('.btn-down').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const idx = parseInt(e.target.dataset.index);
-        if (idx < categories.length - 1) {
-          const temp = categories[idx];
-          categories[idx] = categories[idx + 1];
-          categories[idx + 1] = temp;
-          saveCategories();
-        }
-      });
-    });
-
-    document.querySelectorAll('.btn-edit').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const idx = e.target.dataset.index;
-        openModal(categories[idx]);
-      });
-    });
-
-    document.querySelectorAll('.btn-delete').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const idx = e.target.dataset.index;
-        if (confirm(`カテゴリ「${categories[idx].name}」を削除しますか？`)) {
-          categories.splice(idx, 1);
-          saveCategories();
-        }
-      });
-    });
-  }
-
-  function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  }
-
-  // Modal Handling
-  function openModal(cat = null) {
-    if (cat) {
-      modalTitle.textContent = "カテゴリの編集";
-      catEditId.value = cat.id;
-      catName.value = cat.name;
-      catColor.value = cat.color || 'purple';
-      catDomains.value = (cat.domains || []).join('\n');
-      catKeywords.value = (cat.titleKeywords || []).join('\n');
-      catRegex.value = (cat.regexRules || []).join('\n');
-    } else {
-      modalTitle.textContent = "新しいカテゴリの追加";
-      catEditId.value = "";
-      catName.value = "";
-      catColor.value = "purple";
-      catDomains.value = "";
-      catKeywords.value = "";
-      catRegex.value = "";
+  for (const raw of rawItems) {
+    const normalized = normalizeDomain(raw);
+    if (!normalized) {
+      showDomainFeedback(`「${raw}」は有効なドメインではありません。`);
+      return;
     }
-    categoryModal.classList.remove('hidden');
+
+    if ((category.domains || []).includes(normalized)) {
+      showDomainFeedback(`${normalized} はすでにこのグループに登録されています。`);
+      return;
+    }
+
+    const conflict = findDomainConflict(category.id, normalized);
+    if (conflict) {
+      const detail = conflict.domain === normalized
+        ? '登録されています'
+        : `${conflict.domain} と対象範囲が重なります`;
+      showDomainFeedback(`${normalized} は「${conflict.category.name}」の ${detail}。`);
+      return;
+    }
+    added.push(normalized);
   }
 
-  function closeModal() {
-    categoryModal.classList.add('hidden');
-  }
+  category.domains = [...(category.domains || []), ...added];
+  domainInput.value = '';
+  renderDomains(category);
+  renderCategoryList();
+  markDirty();
+  showDomainFeedback(`${added.length}件追加しました。`, true);
+  domainInput.focus();
+}
 
-  btnAddCategory.addEventListener('click', () => openModal(null));
-  btnCloseModal.addEventListener('click', closeModal);
-  btnCancelModal.addEventListener('click', closeModal);
+function removeDomain(domain) {
+  const category = getSelectedCategory();
+  category.domains = (category.domains || []).filter((item) => item !== domain);
+  renderDomains(category);
+  renderCategoryList();
+  markDirty();
+  showDomainFeedback(`${domain} を削除しました。`, true);
+}
 
-  categoryForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const editId = catEditId.value;
+function changeColor(colorValue) {
+  const category = getSelectedCategory();
+  if (category.color === colorValue) return;
+  category.color = colorValue;
+  const color = getGroupColor(colorValue);
+  selectedColorDot.style.setProperty('--group-color', color.hex);
+  renderColors(category);
+  renderCategoryList();
+  markDirty();
+}
 
-    const parseList = (str) => str.split(/[\n,]/).map(s => s.trim()).filter(Boolean);
+async function saveChanges() {
+  saveButton.disabled = true;
+  discardButton.disabled = true;
+  changeSummary.textContent = '保存しています…';
 
-    const updatedCat = {
-      id: editId || `cat_custom_${Date.now()}`,
-      name: catName.value.trim(),
-      color: catColor.value,
-      enabled: true,
-      domains: parseList(catDomains.value),
-      titleKeywords: parseList(catKeywords.value),
-      regexRules: parseList(catRegex.value)
-    };
-
-    if (editId) {
-      const idx = categories.findIndex(c => c.id === editId);
-      if (idx !== -1) {
-        categories[idx] = updatedCat;
+  try {
+    if (
+      organizeSettings.contentClassificationEnabled
+      && !savedOrganizeSettings.contentClassificationEnabled
+    ) {
+      const granted = await storage.requestContentClassificationAccess();
+      if (!granted) {
+        organizeSettings.contentClassificationEnabled = savedOrganizeSettings.contentClassificationEnabled;
+        renderBehaviorSettings();
+        markDirty();
+        showToast('サイトへのアクセスが許可されなかったため、有効にできませんでした');
+        return false;
       }
-    } else {
-      categories.push(updatedCat);
     }
 
-    saveCategories();
-    closeModal();
-  });
-
-  // Settings Change Listeners
-  optStrictDomainPriority.addEventListener('change', saveSettings);
-  optGroupPinned.addEventListener('change', saveSettings);
-  optDomainFallback.addEventListener('change', saveSettings);
-  optCollapseInactive.addEventListener('change', saveSettings);
-
-  // Export JSON
-  btnExportJson.addEventListener('click', () => {
-    const configData = {
-      categories,
-      settings,
-      exportedAt: new Date().toISOString()
-    };
-    const jsonStr = JSON.stringify(configData, null, 2);
-    const blob = new Blob([jsonStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `smart_tab_rules_${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast("📥 設定ルールをJSONエクスポートしました");
-  });
-
-  // Import JSON
-  btnImportJson.addEventListener('click', () => {
-    fileInput.click();
-  });
-
-  fileInput.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
+    await storage.save({ categories, uiTheme, settings: organizeSettings });
+    let accessRemoved = true;
+    if (
+      !organizeSettings.contentClassificationEnabled
+      && savedOrganizeSettings.contentClassificationEnabled
+    ) {
       try {
-        const imported = JSON.parse(event.target.result);
-        if (imported.categories && Array.isArray(imported.categories)) {
-          categories = imported.categories;
-          if (imported.settings) settings = imported.settings;
-          await chrome.storage.sync.set({ categories, settings });
-          await loadData();
-          showToast("📤 JSON設定を正常にインポートしました");
-        } else {
-          alert("無効なルール設定ファイルです。");
-        }
-      } catch (err) {
-        alert("JSONファイルの読み込みエラー: " + err.message);
+        accessRemoved = await storage.removeContentClassificationAccess();
+      } catch (error) {
+        accessRemoved = false;
+      }
+    }
+    savedCategories = clone(categories);
+    savedUiTheme = clone(uiTheme);
+    savedOrganizeSettings = clone(organizeSettings);
+    dirty = false;
+    updateDirtyState();
+    showToast(
+      !accessRemoved
+        ? '設定は保存しました。サイトアクセスはChromeの拡張機能設定から解除できます'
+        : previewMode ? 'プレビュー設定を保存しました' : '設定を保存しました'
+    );
+    return true;
+  } catch (error) {
+    dirty = true;
+    updateDirtyState();
+    showToast('保存できませんでした');
+    return false;
+  }
+}
+
+function discardChanges() {
+  const currentSelection = selectedCategoryId;
+  categories = clone(savedCategories);
+  uiTheme = clone(savedUiTheme);
+  organizeSettings = clone(savedOrganizeSettings);
+  selectedCategoryId = categories.some((item) => item.id === currentSelection)
+    ? currentSelection
+    : categories[0]?.id;
+  dirty = false;
+  applyUiTheme();
+  renderCategoryList();
+  renderEditor();
+  updateDirtyState();
+}
+
+function markDirty() {
+  dirty = JSON.stringify({ categories, uiTheme, settings: organizeSettings })
+    !== JSON.stringify({
+      categories: savedCategories,
+      uiTheme: savedUiTheme,
+      settings: savedOrganizeSettings
+    });
+  updateDirtyState();
+}
+
+function updateDirtyState() {
+  saveButton.disabled = !dirty;
+  discardButton.disabled = !dirty;
+  saveState.textContent = dirty ? '未保存' : '保存済み';
+  saveState.classList.toggle('is-dirty', dirty);
+  settingsDirtyIndicator.hidden = !dirty;
+  changeSummary.textContent = dirty ? '未保存の変更があります' : '変更はありません';
+  updateOrganizerControls();
+  updateBehaviorOrganizeButton();
+}
+
+function updateBehaviorOrganizeButton() {
+  if (!behaviorOrganizeButton) return;
+  behaviorOrganizeButton.textContent = dirty ? '保存して分類' : '分類を実行';
+  behaviorOrganizeButton.disabled = behaviorActionRunning;
+}
+
+function showDomainFeedback(message, success = false) {
+  domainFeedback.textContent = message;
+  domainFeedback.classList.toggle('is-success', success);
+}
+
+function showToast(message) {
+  clearTimeout(toastTimer);
+  toast.textContent = message;
+  toast.hidden = false;
+  toastTimer = setTimeout(() => {
+    toast.hidden = true;
+  }, 2200);
+}
+
+function getSelectedCategory() {
+  return categories.find((category) => category.id === selectedCategoryId);
+}
+
+function getGroupColor(value) {
+  return GROUP_COLORS.find((color) => color.value === value) || GROUP_COLORS[0];
+}
+
+function normalizeDomain(rawValue) {
+  let value = rawValue.trim().toLowerCase().replace(/^\*\./, '');
+  if (!value) return null;
+
+  try {
+    const url = new URL(value.includes('://') ? value : `https://${value}`);
+    const hostname = url.hostname.toLowerCase().replace(/^\.+|\.+$/g, '');
+    if (!hostname || hostname.includes('..')) return null;
+    if (!/^[a-z0-9.:[\]-]+$/i.test(hostname)) return null;
+    return hostname;
+  } catch (error) {
+    return null;
+  }
+}
+
+function findDomainConflict(selectedId, candidate) {
+  for (const category of categories) {
+    if (category.id === selectedId) continue;
+    const domain = (category.domains || []).find((registered) => registered === candidate);
+    if (domain) return { category, domain };
+  }
+  return null;
+}
+
+function createStorageAdapter() {
+  const canUseExtensionStorage = !previewMode
+    && window.location.protocol === 'chrome-extension:'
+    && Boolean(globalThis.chrome?.storage?.sync);
+
+  if (canUseExtensionStorage) {
+    return {
+      async load() {
+        const data = await chrome.storage.sync.get(['categories', 'uiTheme', 'settings']);
+        return {
+          categories: clone(Array.isArray(data.categories) ? data.categories : FALLBACK_CATEGORIES),
+          uiTheme: SmartTabTheme.normalizeConfig(data.uiTheme),
+          settings: normalizeOrganizeSettings(data.settings)
+        };
+      },
+      async save(value) {
+        await chrome.storage.sync.set({
+          categories: clone(value.categories),
+          uiTheme: SmartTabTheme.normalizeConfig(value.uiTheme),
+          settings: normalizeOrganizeSettings(value.settings)
+        });
+      },
+      async requestContentClassificationAccess() {
+        return chrome.permissions.request({
+          permissions: ['scripting'],
+          origins: ['http://*/*', 'https://*/*']
+        });
+      },
+      async removeContentClassificationAccess() {
+        const request = {
+          permissions: ['scripting'],
+          origins: ['http://*/*', 'https://*/*']
+        };
+        if (!await chrome.permissions.contains(request)) return true;
+        return chrome.permissions.remove(request);
       }
     };
-    reader.readAsText(file);
-  });
+  }
 
-  // Reset to Default
-  btnResetDefault.addEventListener('click', async () => {
-    if (confirm("標準のプリセット（開発系・小説執筆系など）に初期化しますか？")) {
-      categories = DEFAULT_CATEGORIES;
-      settings = DEFAULT_SETTINGS;
-      await chrome.storage.sync.set({ categories, settings });
-      await loadData();
-      showToast("🔄 標準プリセットに初期化しました");
+  return {
+    async load() {
+      try {
+        const saved = window.localStorage.getItem(PREVIEW_STORAGE_KEY);
+        const parsed = saved ? JSON.parse(saved) : null;
+        if (Array.isArray(parsed)) {
+          return {
+            categories: clone(parsed),
+            uiTheme: clone(SmartTabTheme.DEFAULT_CONFIG),
+            settings: normalizeOrganizeSettings()
+          };
+        }
+        return {
+          categories: clone(Array.isArray(parsed?.categories) ? parsed.categories : FALLBACK_CATEGORIES),
+          uiTheme: SmartTabTheme.normalizeConfig(parsed?.uiTheme),
+          settings: normalizeOrganizeSettings(parsed?.settings)
+        };
+      } catch (error) {
+        return {
+          categories: clone(FALLBACK_CATEGORIES),
+          uiTheme: clone(SmartTabTheme.DEFAULT_CONFIG),
+          settings: normalizeOrganizeSettings()
+        };
+      }
+    },
+    async save(value) {
+      window.localStorage.setItem(PREVIEW_STORAGE_KEY, JSON.stringify({
+        categories: clone(value.categories),
+        uiTheme: SmartTabTheme.normalizeConfig(value.uiTheme),
+        settings: normalizeOrganizeSettings(value.settings)
+      }));
+    },
+    async requestContentClassificationAccess() {
+      return true;
+    },
+    async removeContentClassificationAccess() {
+      return true;
     }
-  });
+  };
+}
 
-  // Initial Load
-  await loadData();
+function createOrganizerAdapter() {
+  const canUseExtensionApis = !previewMode
+    && window.location.protocol === 'chrome-extension:'
+    && Boolean(globalThis.chrome?.tabs && globalThis.chrome?.tabGroups);
+
+  if (canUseExtensionApis) {
+    return {
+      async load() {
+        const windowId = await resolveOrganizerWindowId();
+        const [tabs, rawGroups, popupState, managedData] = await Promise.all([
+          chrome.tabs.query({ windowId }),
+          chrome.tabGroups.query({ windowId }),
+          chrome.runtime.sendMessage({ action: 'GET_POPUP_STATE', windowId }),
+          chrome.storage.local.get([MANAGED_GROUPS_STORAGE_KEY])
+        ]);
+        if (!popupState?.success) {
+          throw new Error(popupState?.message || '整理状態を確認できませんでした。');
+        }
+        const normalizedTabs = tabs
+          .filter((tab) => Number.isInteger(tab.id))
+          .map((tab) => ({
+            id: tab.id,
+            groupId: tab.groupId,
+            index: tab.index,
+            pinned: tab.pinned === true,
+            title: tab.title || tab.url || '無題のタブ',
+            url: tab.url || tab.pendingUrl || ''
+          }));
+        const managedRecords = Array.isArray(managedData[MANAGED_GROUPS_STORAGE_KEY])
+          ? managedData[MANAGED_GROUPS_STORAGE_KEY]
+          : [];
+        const groups = rawGroups.map((group) => ({
+          id: group.id,
+          title: group.title || '',
+          color: group.color || 'grey',
+          collapsed: group.collapsed === true,
+          shared: group.shared === true,
+          windowId: group.windowId,
+          managed: managedRecords.some((record) =>
+            record.windowId === windowId
+            && record.groupId === group.id
+            && record.title === (group.title || '')
+            && record.color === (group.color || 'grey')
+          ),
+          tabIds: normalizedTabs
+            .filter((tab) => tab.groupId === group.id)
+            .sort((first, second) => first.index - second.index)
+            .map((tab) => tab.id)
+        })).sort((first, second) => {
+          const firstIndex = normalizedTabs.find((tab) => tab.id === first.tabIds[0])?.index ?? Infinity;
+          const secondIndex = normalizedTabs.find((tab) => tab.id === second.tabIds[0])?.index ?? Infinity;
+          return firstIndex - secondIndex;
+        });
+        return {
+          windowId,
+          groups,
+          tabs: normalizedTabs,
+          preview: popupState.preview,
+          undo: popupState.undo,
+          inProgress: popupState.inProgress === true,
+          recovery: popupState.recovery || null
+        };
+      },
+      organize(windowId) {
+        return chrome.runtime.sendMessage({
+          action: 'ORGANIZE_CURRENT_WINDOW_CONFIRMED',
+          windowId
+        });
+      },
+      previewGroup(windowId, groupId) {
+        return chrome.runtime.sendMessage({
+          action: 'PREVIEW_SELECTED_GROUP_REORGANIZATION',
+          windowId,
+          groupId
+        });
+      },
+      reorganizeGroup(windowId, groupId, expectedFingerprint) {
+        return chrome.runtime.sendMessage({
+          action: 'REORGANIZE_SELECTED_GROUP_CONFIRMED',
+          windowId,
+          groupId,
+          expectedFingerprint
+        });
+      },
+      editGroup(windowId, groupId, expectedFingerprint, changes) {
+        return chrome.runtime.sendMessage({
+          action: 'EDIT_SELECTED_GROUP_CONFIRMED',
+          windowId,
+          groupId,
+          expectedFingerprint,
+          changes
+        });
+      },
+      undo(windowId) {
+        return chrome.runtime.sendMessage({ action: 'UNDO_LAST_ACTION', windowId });
+      }
+    };
+  }
+
+  let previewOrganized = false;
+  let previewReorganized = false;
+  let previewUndoAvailable = false;
+  let previewUndoAction = null;
+  const previewGroupOverrides = new Map();
+  const previewTabs = [
+    { id: 101, groupId: 11, index: 0, title: 'GitHub — smart-tab-grouper', url: 'https://github.com/example/smart-tab-grouper' },
+    { id: 102, groupId: 11, index: 1, title: '検索結果を開発グループへ仮置き', url: 'https://www.google.com/search?q=extensions' },
+    { id: 103, groupId: 12, index: 2, title: '検索結果', url: 'https://www.google.com/search?q=tab+groups' },
+    { id: 104, groupId: 12, index: 3, title: 'ChatGPT', url: 'https://chatgpt.com/' },
+    { id: 105, groupId: 13, index: 4, title: '作業用BGM', url: 'https://www.youtube.com/watch?v=example' },
+    { id: 106, groupId: -1, index: 5, title: '今日のニュース', url: 'https://news.example.com/today' },
+    { id: 107, groupId: -1, index: 6, title: '技術ニュース', url: 'https://it.example.com/article' }
+  ];
+
+  return {
+    async load() {
+      const tabs = previewTabs.map((tab) => {
+        if (previewOrganized && [106, 107].includes(tab.id)) return { ...tab, groupId: 14 };
+        if (previewReorganized && tab.id === 102) return { ...tab, groupId: 12 };
+        return { ...tab };
+      });
+      const groups = [
+        { id: 11, title: '💻 開発・プログラミング', color: 'purple', collapsed: false, shared: false, managed: true, tabIds: tabs.filter((tab) => tab.groupId === 11).map((tab) => tab.id) },
+        { id: 12, title: '🔍 検索・AIアシスタント', color: 'cyan', collapsed: false, shared: false, managed: true, tabIds: tabs.filter((tab) => tab.groupId === 12).map((tab) => tab.id) },
+        { id: 13, title: '🎬 動画・メディア', color: 'red', collapsed: true, shared: false, managed: false, tabIds: [105] }
+      ].map((group) => ({ ...group, windowId: 1, ...(previewGroupOverrides.get(group.id) || {}) }));
+      if (previewOrganized) {
+        groups.push({ id: 14, title: '📰 ニュース・情報', color: 'orange', collapsed: false, managed: true, tabIds: [106, 107] });
+      }
+      return {
+        windowId: 1,
+        groups,
+        tabs,
+        preview: {
+          count: previewOrganized ? 0 : 2,
+          groupCount: previewOrganized ? 0 : 1,
+          targetTabIds: previewOrganized ? [] : [106, 107],
+          eligibleCount: previewOrganized ? 0 : 2,
+          unresolvedTabIds: [],
+          unresolved: 0,
+          contentClassificationEnabled: false
+        },
+        inProgress: false,
+        recovery: null,
+        undo: previewUndoAvailable
+          ? { available: true, operationId: 'options-preview-organize' }
+          : null
+      };
+    },
+    async organize() {
+      await waitForPreview(500);
+      previewUndoAction = { type: 'organize', previous: previewOrganized };
+      previewOrganized = true;
+      previewUndoAvailable = true;
+      return { success: true, count: 2, message: '2件のタブを整理しました。' };
+    },
+    async previewGroup(windowId, groupId) {
+      await waitForPreview(300);
+      const currentTabs = previewTabs.filter((tab) =>
+        (previewReorganized && tab.id === 102 ? 12 : tab.groupId) === groupId
+      );
+      const source = groupId === 11
+        ? { title: '💻 開発・プログラミング', color: 'purple' }
+        : { title: '選択グループ', color: 'grey' };
+      const movable = groupId === 11 && !previewReorganized ? [102] : [];
+      return {
+        success: true,
+        windowId,
+        groupId,
+        title: source.title,
+        color: source.color,
+        totalCount: currentTabs.length,
+        retainedCount: currentTabs.length - movable.length,
+        movedCount: movable.length,
+        targetGroupCount: movable.length > 0 ? 1 : 0,
+        newGroupCount: 0,
+        blockedCount: 0,
+        targets: movable.length > 0
+          ? [{ categoryId: 'cat_ai_search', name: '🔍 検索・AIアシスタント', color: 'cyan', count: 1, reusesManagedGroup: true }]
+          : [],
+        fingerprint: {
+          groupId,
+          title: source.title,
+          color: source.color,
+          tabs: currentTabs.map((tab) => ({
+            id: tab.id,
+            index: tab.index,
+            url: tab.url,
+            title: tab.title
+          }))
+        }
+      };
+    },
+    async reorganizeGroup() {
+      await waitForPreview(500);
+      previewUndoAction = { type: 'reorganize', previous: previewReorganized };
+      previewReorganized = true;
+      previewUndoAvailable = true;
+      return { success: true, count: 1, message: '1件を1グループへ分け直しました。' };
+    },
+    async editGroup(windowId, groupId, expectedFingerprint, changes) {
+      await waitForPreview(350);
+      previewUndoAction = {
+        type: 'edit',
+        groupId,
+        previous: previewGroupOverrides.has(groupId)
+          ? { ...previewGroupOverrides.get(groupId) }
+          : null
+      };
+      previewGroupOverrides.set(groupId, {
+        title: String(changes?.title || '').trim(),
+        color: GROUP_COLORS.some((color) => color.value === changes?.color) ? changes.color : 'grey',
+        collapsed: changes?.collapsed === true
+      });
+      previewUndoAvailable = true;
+      return {
+        success: true,
+        count: 1,
+        message: `「${String(changes?.title || '').trim() || '名称なし'}」の表示を変更しました。`
+      };
+    },
+    async undo() {
+      await waitForPreview(300);
+      if (previewUndoAction?.type === 'organize') {
+        previewOrganized = previewUndoAction.previous;
+      } else if (previewUndoAction?.type === 'reorganize') {
+        previewReorganized = previewUndoAction.previous;
+      } else if (previewUndoAction?.type === 'edit') {
+        if (previewUndoAction.previous) {
+          previewGroupOverrides.set(previewUndoAction.groupId, previewUndoAction.previous);
+        } else {
+          previewGroupOverrides.delete(previewUndoAction.groupId);
+        }
+      }
+      previewUndoAction = null;
+      previewUndoAvailable = false;
+      return { success: true, restoredCount: 2, message: '2件を元に戻しました。' };
+    }
+  };
+}
+
+async function resolveOrganizerWindowId() {
+  const requested = Number.parseInt(new URLSearchParams(window.location.search).get('windowId'), 10);
+  if (Number.isInteger(requested) && requested >= 0) {
+    try {
+      await chrome.windows.get(requested);
+      return requested;
+    } catch (error) {
+      // The source window may have been closed while this settings tab stayed open.
+    }
+  }
+  const current = await chrome.windows.getCurrent();
+  if (!Number.isInteger(current?.id)) throw new Error('整理するウィンドウを確認できませんでした。');
+  return current.id;
+}
+
+function waitForPreview(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function normalizeOrganizeSettings(value = {}) {
+  return {
+    ...value,
+    ...DEFAULT_ORGANIZE_SETTINGS,
+    groupByDomainAsFallback: false,
+    contentClassificationEnabled: value?.contentClassificationEnabled === true,
+    groupUnmatchedAsOthers: value?.groupUnmatchedAsOthers === true
+  };
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+window.addEventListener('beforeunload', (event) => {
+  if (!dirty) return;
+  event.preventDefault();
+  event.returnValue = '';
 });

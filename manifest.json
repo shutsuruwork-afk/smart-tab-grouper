@@ -1,13 +1,21 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "102",
   "name": "Smart Tab Grouper - 分野別タブ自動整理",
-  "version": "1.1.0",
+  "version": "1.0.0",
   "description": "開発系・小説執筆系・AI検索系など、開いているタブを分野ごとに自動・手動で色付きタブグループに整理します。ドメイン最優先判定・誤検知防止・プレビュー・Undo機能対応。",
   "permissions": [
     "tabs",
     "tabGroups",
     "storage",
     "unlimitedStorage"
+  ],
+  "optional_permissions": [
+    "scripting"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js",

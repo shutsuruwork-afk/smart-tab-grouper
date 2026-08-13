@@ -199,8 +199,10 @@ export const DEFAULT_CATEGORIES = [
 
 export const DEFAULT_SETTINGS = {
   autoGroupOnUpdate: false,         // タブ更新時のリアルタイム自動グループ化
+  contentClassificationEnabled: false, // 未登録サイトをページ内容から補助分類するか
   groupPinnedTabs: false,          // ピン留めタブをグループ化対象に含めるか
-  groupByDomainAsFallback: true,   // 未定義のものはドメイン名でグループ化するか
+  groupByDomainAsFallback: false,  // 旧試作設定。未分類をドメイン別にはまとめない
+  groupUnmatchedAsOthers: false,   // 未分類タブを一つの「Others」へまとめるか
   collapseInactiveGroups: false,   // 非アクティブなグループを折りたたむか
   strictDomainPriority: true,      // 登録済みドメイン判定を最優先（キーワード誤検知を完全防止）
   previewMode: false,              // プレビュー・ドライランモード（実環境を汚さず分類結果をテスト）

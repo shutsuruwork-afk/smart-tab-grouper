@@ -3,166 +3,297 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Smart Tab Grouper - 設定＆カテゴリルール編集</title>
+  <title>分類設定 — Smart Tab Grouper</title>
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
-  <div class="options-container">
-    <!-- Sidebar / Top Navigation Header -->
-    <header class="header">
-      <div class="header-brand">
-        <div class="brand-icon">🗂️</div>
-        <div>
-          <h1>Smart Tab Grouper 設定ダッシュボード v1.1.0</h1>
-          <p>ドメイン最優先判定・誤検知防止・プレビュー＆Undo機能対応</p>
-        </div>
-      </div>
-      <div class="header-actions">
-        <button id="btnExportJson" class="btn btn-outline" title="設定ルールをJSON形式でダウンロード">
-          📥 エクスポート (JSON)
+  <header class="app-bar">
+    <div class="workspace-picker">
+      <h1>
+        <button id="workspacePickerButton" class="workspace-picker-button" type="button" aria-haspopup="menu" aria-expanded="false">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+          <span class="workspace-copy">
+            <span id="workspaceTitle" class="workspace-title">分類設定</span>
+            <span class="workspace-subtitle" aria-hidden="true">Smart Tab Grouper</span>
+          </span>
+          <span class="workspace-picker-chevron" aria-hidden="true"></span>
         </button>
-        <button id="btnImportJson" class="btn btn-outline" title="JSONファイルから設定を復元">
-          📤 インポート
+      </h1>
+      <div id="workspaceMenu" class="workspace-menu" role="menu" aria-label="作業画面を切り替え" hidden>
+        <button id="settingsWorkspaceOption" type="button" role="menuitemradio" aria-checked="true">
+          <span class="workspace-menu-check" aria-hidden="true">✓</span>
+          <span>分類設定</span>
+          <i id="settingsDirtyIndicator" class="dirty-indicator" aria-label="未保存の変更あり" hidden></i>
         </button>
-        <input type="file" id="fileInput" accept=".json" style="display: none;">
-        <button id="btnResetDefault" class="btn btn-danger" title="標準プリセット（開発系・小説執筆系など）に戻す">
-          🔄 プリセット初期化
+        <button id="organizerWorkspaceOption" type="button" role="menuitemradio" aria-checked="false">
+          <span class="workspace-menu-check" aria-hidden="true">✓</span>
+          <span>タブグループ整理</span>
         </button>
-      </div>
-    </header>
-
-    <!-- Main Grid -->
-    <main class="main-content">
-      <!-- General Settings Card -->
-      <section class="card settings-card">
-        <h2>⚙️ 一般設定・誤検知防止モデル</h2>
-        <div class="settings-grid">
-          <label class="setting-item">
-            <input type="checkbox" id="optStrictDomainPriority">
-            <div class="setting-text">
-              <span class="setting-title">登録済みドメイン判定を最優先する (推奨・誤検知防止)</span>
-              <span class="setting-desc">登録済みドメイン（github.comやsyosetu.comなど）をタイトルキーワードより最優先で分類し、タイトルの誤検知を完全防止します</span>
-            </div>
-          </label>
-
-          <label class="setting-item">
-            <input type="checkbox" id="optGroupPinned">
-            <div class="setting-text">
-              <span class="setting-title">ピン留めタブもグループ化に含める</span>
-              <span class="setting-desc">オフの場合、ピン留めされたタブはグループ化されず固定表示されたままになります</span>
-            </div>
-          </label>
-
-          <label class="setting-item">
-            <input type="checkbox" id="optDomainFallback">
-            <div class="setting-text">
-              <span class="setting-title">未分類タブをドメイン名で自動グループ化</span>
-              <span class="setting-desc">ルールに該当しないタブを「🌐 amazon.co.jp」などのドメイン名グループにまとめます</span>
-            </div>
-          </label>
-
-          <label class="setting-item">
-            <input type="checkbox" id="optCollapseInactive">
-            <div class="setting-text">
-              <span class="setting-title">非アクティブなグループを自動で折りたたむ</span>
-              <span class="setting-desc">現在開いているタブ以外のグループを折りたたんでタブバーをすっきりさせます</span>
-            </div>
-          </label>
-        </div>
-      </section>
-
-      <!-- Exclusion List Management Card -->
-      <section class="card exclusion-card">
-        <h2>🚫 グループ化 除外リスト (ブラックリスト)</h2>
-        <p class="card-desc">以下のドメイン・URL・キーワードに一致するタブは、自動グループ化の対象から除外されます。</p>
-        <div class="form-group">
-          <textarea id="txtExclusions" rows="3" placeholder="chrome://, internal.bank.com, example.com"></textarea>
-          <span class="form-hint">カンマまたは改行区切りで指定できます</span>
-        </div>
-        <button id="btnSaveExclusions" class="btn btn-outline" style="align-self: flex-start;">
-          💾 除外リストを保存
-        </button>
-      </section>
-
-      <!-- Category Management Card -->
-      <section class="card categories-card">
-        <div class="card-header">
-          <div>
-            <h2>🏷️ 分野・カテゴリ分類ルール</h2>
-            <p>優先度の高い順に上から一致判定が行われます。ドラッグまたは上下で順序調整可能。</p>
-          </div>
-          <button id="btnAddCategory" class="btn btn-primary">
-            ➕ 新しいカテゴリを追加
-          </button>
-        </div>
-
-        <div id="categoryContainer" class="category-container">
-          <!-- Categories populated by JS -->
-        </div>
-      </section>
-    </main>
-
-    <!-- Modal for Adding/Editing Category -->
-    <div id="categoryModal" class="modal-backdrop hidden">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h3 id="modalTitle">新しいカテゴリの追加</h3>
-          <button id="btnCloseModal" class="modal-close">&times;</button>
-        </div>
-        <div class="modal-body">
-          <form id="categoryForm">
-            <input type="hidden" id="catEditId">
-            
-            <div class="form-group">
-              <label for="catName">カテゴリ表示名 (絵文字追加推奨)</label>
-              <input type="text" id="catName" placeholder="例: ✍️ 小説執筆・リサーチ" required>
-            </div>
-
-            <div class="form-group">
-              <label for="catColor">グループカラー</label>
-              <select id="catColor" required>
-                <option value="purple">💜 Purple (紫)</option>
-                <option value="green">💚 Green (緑)</option>
-                <option value="cyan">🩵 Cyan (シアン)</option>
-                <option value="red">❤️ Red (赤)</option>
-                <option value="pink">🩷 Pink (ピンク)</option>
-                <option value="yellow">💛 Yellow (黄)</option>
-                <option value="orange">🧡 Orange (オレンジ)</option>
-                <option value="blue">💙 Blue (青)</option>
-                <option value="grey">🩶 Grey (グレー)</option>
-              </select>
-            </div>
-
-            <div class="form-group">
-              <label for="catDomains">対象ドメイン (カンマまたは改行区切り)</label>
-              <textarea id="catDomains" rows="3" placeholder="syosetu.com, kakuyomu.jp, alphapolis.co.jp, weblio.jp"></textarea>
-              <span class="form-hint">サブドメインも自動的にマッチします（例: syosetu.com は ncode.syosetu.com にマッチ）</span>
-            </div>
-
-            <div class="form-group">
-              <label for="catKeywords">ページタイトルキーワード (カンマまたは改行区切り)</label>
-              <textarea id="catKeywords" rows="3" placeholder="小説家になろう, カクヨム, 類語, 辞典, 執筆"></textarea>
-              <span class="form-hint">タブのタイトルにこれらの単語が含まれている場合にマッチします</span>
-            </div>
-
-            <div class="form-group">
-              <label for="catRegex">高度な正規表現ルール (カンマまたは改行区切り - オプション)</label>
-              <textarea id="catRegex" rows="2" placeholder="syosetu|kakuyomu|weblio"></textarea>
-            </div>
-
-            <div class="modal-actions">
-              <button type="button" id="btnCancelModal" class="btn btn-outline">キャンセル</button>
-              <button type="submit" class="btn btn-primary">保存する</button>
-            </div>
-          </form>
-        </div>
       </div>
     </div>
+    <span id="previewBadge" class="preview-badge" hidden>UIプレビュー</span>
+  </header>
 
-    <!-- Notification Toast -->
-    <div id="toast" class="toast hidden"></div>
-  </div>
+  <main id="settingsWorkspace" class="settings-layout">
+    <aside class="category-panel" aria-labelledby="categoryHeading">
+      <div class="panel-heading">
+        <div>
+          <p class="overline">GROUPS</p>
+          <h2 id="categoryHeading">分類グループ</h2>
+        </div>
+        <span id="categoryCount" class="count-badge"></span>
+      </div>
+      <nav id="categoryList" class="category-list" aria-label="分類グループ一覧"></nav>
 
-  <script type="module" src="options.js"></script>
+      <nav class="settings-nav" aria-label="その他の設定">
+        <button id="behaviorNav" class="settings-nav-item" type="button" aria-current="false">
+          <span class="behavior-mark" aria-hidden="true"><i></i></span>
+          <span class="category-copy">
+            <span class="category-name">整理の動作</span>
+            <span class="category-meta">未分類タブ</span>
+          </span>
+          <span class="category-chevron" aria-hidden="true">›</span>
+        </button>
+        <button id="appearanceNav" class="settings-nav-item" type="button" aria-current="false">
+          <span class="appearance-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="category-copy">
+            <span class="category-name">外観</span>
+            <span class="category-meta">配色と明暗</span>
+          </span>
+          <span class="category-chevron" aria-hidden="true">›</span>
+        </button>
+      </nav>
+    </aside>
+
+    <section class="editor-panel" aria-labelledby="editorTitle">
+      <header class="editor-header">
+        <div class="editor-title-row">
+          <span id="behaviorEditorIcon" class="behavior-editor-icon" aria-hidden="true" hidden>
+            <i></i>
+          </span>
+          <span id="appearanceEditorIcon" class="appearance-editor-icon" aria-hidden="true" hidden>
+            <i></i><i></i><i></i>
+          </span>
+          <span id="selectedColorDot" class="selected-color-dot" aria-hidden="true"></span>
+          <div>
+            <p id="editorOverline" class="overline">EDIT GROUP</p>
+            <h2 id="editorTitle"></h2>
+          </div>
+        </div>
+        <div class="editor-header-actions">
+          <span id="saveState" class="save-state">保存済み</span>
+          <button id="discardButton" class="button button-secondary button-compact" type="button" disabled>戻す</button>
+          <button id="saveButton" class="button button-primary button-compact" type="button" disabled>保存</button>
+        </div>
+      </header>
+
+      <div id="appearanceEditor" class="editor-content appearance-editor" hidden>
+        <section class="setting-section" aria-labelledby="themeHeading">
+          <div class="section-copy">
+            <h3 id="themeHeading">カラーテーマ</h3>
+            <p>テンプレートを選ぶか、基準色を1色だけ選んでください。背景・文字・ボタン・枠線は自動で決まります。</p>
+          </div>
+
+          <div id="themeOptions" class="theme-options" role="radiogroup" aria-labelledby="themeHeading"></div>
+        </section>
+
+        <section class="setting-section automatic-rules" aria-labelledby="automaticHeading">
+          <div class="section-copy">
+            <h3 id="automaticHeading">自動で調整されるもの</h3>
+            <p>追加の選択は不要です。Chromeと同じように、状態に応じて見やすさを保ちます。</p>
+          </div>
+          <div class="automatic-rule-list">
+            <div><span aria-hidden="true">◐</span><p><strong>明るさ</strong><small>システムのライト／ダークに追従</small></p></div>
+            <div><span aria-hidden="true">Aa</span><p><strong>文字色</strong><small>背景とのコントラストを自動確保</small></p></div>
+            <div><span aria-hidden="true">▱</span><p><strong>影と境界</strong><small>明るさに合わせて強さを自動調整</small></p></div>
+          </div>
+        </section>
+      </div>
+
+      <div id="behaviorEditor" class="editor-content behavior-editor" hidden>
+        <section class="setting-section" aria-labelledby="unmatchedHeading">
+          <div class="section-copy">
+            <h3 id="unmatchedHeading">未分類タブ</h3>
+            <p>どの分類グループにも一致しなかったタブの扱いです。既定では何も変更しません。</p>
+          </div>
+
+          <label class="toggle-setting-card" for="contentClassificationToggle">
+            <span class="content-scan-mark" aria-hidden="true">Aa</span>
+            <span class="toggle-setting-copy">
+              <strong>未登録サイトも自動分類</strong>
+              <small>ページの説明と見出しを端末内で判定します。既定はオフ・未分類30件までです。</small>
+            </span>
+            <input id="contentClassificationToggle" type="checkbox">
+            <span class="switch-control" aria-hidden="true"><i></i></span>
+          </label>
+
+          <label class="toggle-setting-card" for="groupUnmatchedToggle">
+            <span class="others-color-dot" aria-hidden="true"></span>
+            <span class="toggle-setting-copy">
+              <strong>Others</strong>
+              <small>未分類タブをこのグループへまとめます。</small>
+            </span>
+            <input id="groupUnmatchedToggle" type="checkbox">
+            <span class="switch-control" aria-hidden="true"><i></i></span>
+          </label>
+        </section>
+
+        <div class="behavior-run-action">
+          <span class="behavior-run-copy">
+            <strong>対象ウィンドウで確認</strong>
+            <small>実行前に、分類候補の件数をもう一度表示します。</small>
+          </span>
+          <button id="behaviorOrganizeButton" class="button button-primary" type="button">分類を実行</button>
+        </div>
+      </div>
+
+      <div id="groupEditor" class="editor-content">
+        <section class="setting-section" aria-labelledby="domainHeading">
+          <div class="section-copy">
+            <h3 id="domainHeading">最優先ドメイン</h3>
+            <p>登録したドメインはタイトルやキーワードより先に判定します。重なる場合は、より具体的なドメインが優先されます。</p>
+          </div>
+
+          <div class="domain-entry">
+            <label class="domain-input-wrap" for="domainInput">
+              <span>ドメインを追加</span>
+              <input id="domainInput" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="example.com">
+            </label>
+            <button id="addDomainButton" class="add-domain-button" type="button">追加</button>
+          </div>
+          <p id="domainFeedback" class="domain-feedback" role="status" aria-live="polite"></p>
+
+          <div id="domainList" class="domain-list" aria-label="登録済みの最優先ドメイン"></div>
+          <p id="emptyDomains" class="empty-domains" hidden>登録済みドメインはありません。</p>
+        </section>
+
+        <section class="setting-section color-section" aria-labelledby="colorHeading">
+          <div class="section-copy">
+            <h3 id="colorHeading">グループの色</h3>
+            <p>整理後にChromeのタブバーで表示される色です。</p>
+          </div>
+          <div id="colorOptions" class="color-options" role="radiogroup" aria-labelledby="colorHeading"></div>
+        </section>
+      </div>
+
+      <p id="changeSummary" class="visually-hidden" role="status" aria-live="polite">変更はありません</p>
+    </section>
+  </main>
+
+  <main id="organizerWorkspace" class="organizer-layout" hidden>
+    <aside class="organizer-groups-panel" aria-labelledby="organizerGroupsHeading">
+      <div class="panel-heading organizer-panel-heading">
+        <div>
+          <p class="overline">TARGET WINDOW</p>
+          <h2 id="organizerGroupsHeading">タブグループ</h2>
+        </div>
+        <button id="refreshGroupsButton" class="refresh-groups-button" type="button">更新</button>
+      </div>
+      <p id="organizerWindowSummary" class="organizer-window-summary">現在の状態を確認しています…</p>
+      <nav id="currentGroupList" class="current-group-list" aria-label="現在のタブグループ"></nav>
+      <p id="emptyGroups" class="organizer-empty" hidden>このウィンドウにタブグループはありません。</p>
+    </aside>
+
+    <section class="group-inspector" aria-labelledby="inspectorTitle">
+      <header class="editor-header organizer-header">
+        <div class="editor-title-row">
+          <span id="inspectorColorDot" class="selected-color-dot" aria-hidden="true" hidden></span>
+          <div>
+            <p id="inspectorOverline" class="overline">TAB GROUP</p>
+            <h2 id="inspectorTitle">タブグループを選択</h2>
+          </div>
+        </div>
+        <div class="organizer-header-actions">
+          <span id="organizerStatus" class="organizer-status" role="status" aria-live="polite"></span>
+          <button id="organizeWindowButton" class="button button-primary button-compact" type="button">未グループを分類</button>
+        </div>
+      </header>
+
+      <div class="group-inspector-content">
+        <div id="groupInspectorEmpty" class="inspector-empty-state">
+          <span aria-hidden="true">▱</span>
+          <h3>タブグループを選択</h3>
+          <p>左の一覧から、内容を確認するグループを選んでください。</p>
+        </div>
+
+        <div id="selectedGroupContent" hidden>
+          <div class="group-facts" aria-label="選択したグループの状態">
+            <div><span id="selectedGroupTabLabel">タブ</span><strong id="selectedGroupTabCount">0</strong></div>
+            <div><span id="selectedGroupStateLabel">表示</span><strong id="selectedGroupCollapsed">展開</strong></div>
+            <div><span id="selectedGroupColorLabel">色</span><strong id="selectedGroupColor">グレー</strong></div>
+          </div>
+          <div id="groupEditAction" class="group-action-row">
+            <div>
+              <strong>グループの表示</strong>
+              <span>名前・色・折りたたみ状態を変更します。</span>
+            </div>
+            <button id="editGroupButton" class="button button-secondary" type="button">編集</button>
+          </div>
+          <div id="groupReorganizeAction" class="group-action-row group-reorganize-action">
+            <div>
+              <strong>このグループを再構成</strong>
+              <span>現在の分類設定で、別分類が明確なタブだけを外へ分けます。</span>
+            </div>
+            <button id="reorganizeGroupButton" class="button button-secondary" type="button">変更を確認</button>
+          </div>
+          <section class="group-tabs-section" aria-labelledby="groupTabsHeading">
+            <div class="section-copy">
+              <h3 id="groupTabsHeading">グループ内のタブ</h3>
+              <p id="groupTabsDescription">現在の並び順です。この画面ではまだ変更しません。</p>
+            </div>
+            <div id="selectedGroupTabs" class="selected-group-tabs"></div>
+          </section>
+        </div>
+      </div>
+
+      <p id="organizerUndoHint" class="organizer-undo-hint" hidden><kbd>Ctrl</kbd><span>+</span><kbd>Z</kbd> で元に戻せます</p>
+    </section>
+  </main>
+
+  <dialog id="organizeDialog" class="organize-dialog" aria-labelledby="organizeDialogTitle" aria-describedby="organizeDialogDescription">
+    <div class="dialog-copy">
+      <p id="organizeDialogOverline" class="overline">UNGROUPED TABS</p>
+      <h2 id="organizeDialogTitle">本当に整理しますか？</h2>
+      <p id="organizeDialogDescription">対象を確認しています。</p>
+    </div>
+    <div class="dialog-actions">
+      <button id="cancelOrganizeButton" class="button button-secondary" type="button">キャンセル</button>
+      <button id="confirmOrganizeButton" class="button button-primary" type="button">整理</button>
+    </div>
+  </dialog>
+
+  <dialog id="groupEditDialog" class="organize-dialog group-edit-dialog" aria-labelledby="groupEditDialogTitle">
+    <div class="dialog-copy">
+      <p class="overline">TAB GROUP</p>
+      <h2 id="groupEditDialogTitle">グループを編集</h2>
+    </div>
+    <div class="group-edit-form">
+      <label class="group-edit-name" for="groupEditNameInput">
+        <span>名前</span>
+        <input id="groupEditNameInput" type="text" maxlength="80" autocomplete="off" spellcheck="false">
+      </label>
+      <fieldset class="group-edit-colors">
+        <legend>色</legend>
+        <div id="groupEditColorOptions" class="group-edit-color-options" role="radiogroup" aria-label="グループの色"></div>
+      </fieldset>
+      <label class="group-edit-collapse" for="groupEditCollapsedToggle">
+        <span class="toggle-setting-copy">
+          <strong>折りたたむ</strong>
+          <small>保存後、Chromeのタブバーでタブを隠します。</small>
+        </span>
+        <input id="groupEditCollapsedToggle" type="checkbox">
+        <span class="switch-control" aria-hidden="true"><i></i></span>
+      </label>
+      <p id="groupEditStatus" class="group-edit-status" role="status" aria-live="polite"></p>
+    </div>
+    <div class="dialog-actions">
+      <button id="cancelGroupEditButton" class="button button-secondary" type="button">キャンセル</button>
+      <button id="saveGroupEditButton" class="button button-primary" type="button" disabled>保存</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="../utils/theme.js"></script>
+  <script src="options.js"></script>
 </body>
 </html>
