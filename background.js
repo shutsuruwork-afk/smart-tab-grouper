@@ -30,8 +30,44 @@ import {
   reorganizeGroupSafely
 } from './utils/group_reorganizer.js';
 import { editGroupSafely } from './utils/group_editor.js';
+import {
+  abandonContentAccessDraft,
+  beginContentAccessDraft,
+  commitContentAccessDraft,
+  isOptionsUrl,
+  reconcileContentAccessDrafts,
+  shouldAbandonContentAccessDraft
+} from './utils/content_access_draft.js';
 
 let organizeInFlight = false;
+const OPTIONS_PAGE_URL = chrome.runtime.getURL('options/options.html');
+
+function reconcileDraftContentAccess() {
+  return reconcileContentAccessDrafts(chrome, OPTIONS_PAGE_URL)
+    .catch((error) => console.warn('Draft content access cleanup failed:', error));
+}
+
+function getOptionsSenderTabId(message, sender) {
+  const senderUrl = sender.url || sender.tab?.pendingUrl || sender.tab?.url;
+  if (!isOptionsUrl(senderUrl, OPTIONS_PAGE_URL)) return null;
+  if (Number.isInteger(sender.tab?.id)) return sender.tab.id;
+  return Number.isInteger(message.tabId) ? message.tabId : null;
+}
+
+void reconcileDraftContentAccess();
+
+chrome.runtime.onStartup?.addListener(reconcileDraftContentAccess);
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  abandonContentAccessDraft(chrome, tabId, OPTIONS_PAGE_URL)
+    .catch((error) => console.warn('Draft content access cleanup failed:', error));
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!shouldAbandonContentAccessDraft(changeInfo, OPTIONS_PAGE_URL)) return;
+  abandonContentAccessDraft(chrome, tabId, OPTIONS_PAGE_URL)
+    .catch((error) => console.warn('Draft content access cleanup failed:', error));
+});
 
 // Initialize extension storage on install
 chrome.runtime.onInstalled.addListener(async () => {
@@ -534,6 +570,28 @@ async function addExclusion(domainOrUrl) {
 
 // Message listener for popup & options communication
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'BEGIN_CONTENT_ACCESS_DRAFT') {
+    const tabId = getOptionsSenderTabId(message, sender);
+    if (!Number.isInteger(tabId)) {
+      sendResponse({ success: false });
+      return false;
+    }
+    beginContentAccessDraft(chrome, tabId, OPTIONS_PAGE_URL)
+      .then((result) => sendResponse({ success: result.tracked === true }))
+      .catch(() => sendResponse({ success: false }));
+    return true;
+  }
+  if (message.action === 'COMMIT_CONTENT_ACCESS_DRAFT') {
+    const tabId = getOptionsSenderTabId(message, sender);
+    if (!Number.isInteger(tabId)) {
+      sendResponse({ success: false });
+      return false;
+    }
+    commitContentAccessDraft(chrome, tabId)
+      .then(() => sendResponse({ success: true }))
+      .catch(() => sendResponse({ success: false }));
+    return true;
+  }
   if (message.action === "ORGANIZE_CURRENT_WINDOW") {
     organizeTabs(message.windowId).then(res => sendResponse(res));
     return true;

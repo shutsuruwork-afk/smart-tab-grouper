@@ -181,6 +181,7 @@ let selectedGroupEditColor = 'grey';
 let groupEditSaving = false;
 let contentClassificationAccessGranted = false;
 let contentClassificationAccessChecking = false;
+let contentAccessDraftActive = false;
 
 document.addEventListener('DOMContentLoaded', initialize);
 
@@ -985,6 +986,9 @@ async function refreshContentAccessState() {
   const granted = await storage.hasContentClassificationAccess();
   if (granted === contentClassificationAccessGranted) return;
   contentClassificationAccessGranted = granted;
+  if (!granted && contentAccessDraftActive) {
+    await finishContentAccessDraft();
+  }
   if (!granted && organizeSettings.contentClassificationEnabled) {
     organizeSettings.contentClassificationEnabled = false;
   }
@@ -1408,7 +1412,10 @@ async function changeContentClassificationBehavior(event) {
       renderBehaviorSettings();
       try {
         const removed = await storage.removeContentClassificationAccess();
-        if (removed) contentClassificationAccessGranted = false;
+        if (removed) {
+          contentClassificationAccessGranted = false;
+          await finishContentAccessDraft();
+        }
         else showToast('サイトアクセスはChromeの拡張機能設定から解除できます');
       } catch (error) {
         showToast('サイトアクセスはChromeの拡張機能設定から解除できます');
@@ -1427,6 +1434,10 @@ async function changeContentClassificationBehavior(event) {
     renderBehaviorSettings();
     let granted = false;
     try {
+      const shouldTrackDraft = !savedOrganizeSettings.contentClassificationEnabled;
+      const tracked = !shouldTrackDraft || await storage.beginContentAccessDraft();
+      if (!tracked) throw new Error('サイトアクセスの未保存状態を追跡できませんでした。');
+      contentAccessDraftActive = shouldTrackDraft;
       granted = await storage.requestContentClassificationAccess();
     } catch (error) {
       granted = false;
@@ -1435,6 +1446,7 @@ async function changeContentClassificationBehavior(event) {
     contentClassificationAccessChecking = false;
     if (!granted) {
       organizeSettings.contentClassificationEnabled = false;
+      await finishContentAccessDraft();
       showToast('サイトアクセスが許可されなかったため、オフのままです');
     } else {
       showToast(savedOrganizeSettings.contentClassificationEnabled
@@ -1548,7 +1560,10 @@ async function saveChanges() {
     ) {
       try {
         accessRemoved = await storage.removeContentClassificationAccess();
-        if (accessRemoved) contentClassificationAccessGranted = false;
+        if (accessRemoved) {
+          contentClassificationAccessGranted = false;
+          await finishContentAccessDraft();
+        }
       } catch (error) {
         accessRemoved = false;
       }
@@ -1556,6 +1571,7 @@ async function saveChanges() {
     savedCategories = clone(categories);
     savedUiTheme = clone(uiTheme);
     savedOrganizeSettings = clone(organizeSettings);
+    if (organizeSettings.contentClassificationEnabled) await finishContentAccessDraft();
     dirty = false;
     updateDirtyState();
     if (selectedView === 'behavior') renderBehaviorSettings();
@@ -1586,7 +1602,10 @@ async function discardChanges() {
     contentClassificationAccessChecking = true;
     try {
       const removed = await storage.removeContentClassificationAccess();
-      if (removed) contentClassificationAccessGranted = false;
+      if (removed) {
+        contentClassificationAccessGranted = false;
+        await finishContentAccessDraft();
+      }
       else showToast('サイトアクセスはChromeの拡張機能設定から解除できます');
     } catch (error) {
       showToast('サイトアクセスはChromeの拡張機能設定から解除できます');
@@ -1631,6 +1650,13 @@ function updateBehaviorOrganizeButton() {
   if (!behaviorOrganizeButton) return;
   behaviorOrganizeButton.textContent = dirty ? '保存して分類' : '分類を実行';
   behaviorOrganizeButton.disabled = behaviorActionRunning || contentClassificationAccessChecking;
+}
+
+async function finishContentAccessDraft() {
+  if (!contentAccessDraftActive) return true;
+  const finished = await storage.finishContentAccessDraft().catch(() => false);
+  if (finished) contentAccessDraftActive = false;
+  return finished;
 }
 
 function showDomainFeedback(message, success = false) {
@@ -1720,6 +1746,22 @@ function createStorageAdapter() {
         };
         if (!await chrome.permissions.contains(request)) return true;
         return chrome.permissions.remove(request);
+      },
+      async beginContentAccessDraft() {
+        const tab = await chrome.tabs.getCurrent();
+        const response = await chrome.runtime.sendMessage({
+          action: 'BEGIN_CONTENT_ACCESS_DRAFT',
+          tabId: tab?.id
+        });
+        return response?.success === true;
+      },
+      async finishContentAccessDraft() {
+        const tab = await chrome.tabs.getCurrent();
+        const response = await chrome.runtime.sendMessage({
+          action: 'COMMIT_CONTENT_ACCESS_DRAFT',
+          tabId: tab?.id
+        });
+        return response?.success === true;
       }
     };
   }
@@ -1768,6 +1810,12 @@ function createStorageAdapter() {
     async removeContentClassificationAccess() {
       previewContentAccessGranted = false;
       window.localStorage.removeItem(PREVIEW_CONTENT_ACCESS_KEY);
+      return true;
+    },
+    async beginContentAccessDraft() {
+      return true;
+    },
+    async finishContentAccessDraft() {
       return true;
     }
   };
