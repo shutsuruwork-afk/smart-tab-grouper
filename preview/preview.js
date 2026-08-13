@@ -4,6 +4,7 @@ const state = {
   theme: 'light',
   outcome: 'success',
   undoTtl: '1800000',
+  startup: 'normal',
   shadow: true
 };
 
@@ -22,6 +23,7 @@ bindChoiceGroup('paletteOptions', 'palette');
 bindChoiceGroup('themeOptions', 'theme');
 bindChoiceGroup('outcomeOptions', 'outcome');
 bindChoiceGroup('undoTtlOptions', 'undoTtl');
+bindChoiceGroup('startupOptions', 'startup');
 
 shadowToggle.addEventListener('change', () => {
   state.shadow = shadowToggle.checked;
@@ -87,6 +89,7 @@ function openPopup() {
     theme: state.theme,
     outcome: state.outcome,
     undoTtl: state.undoTtl,
+    startup: state.startup,
     shadow: state.shadow ? 'on' : 'off',
     actionDelay: '900',
     closeDelay: '900'

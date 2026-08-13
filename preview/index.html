@@ -57,6 +57,14 @@
         </div>
       </fieldset>
 
+      <fieldset>
+        <legend>起動状態</legend>
+        <div class="segmented" id="startupOptions">
+          <button class="is-selected" type="button" data-value="normal" aria-pressed="true">通常</button>
+          <button type="button" data-value="progress" aria-pressed="false">処理中</button>
+        </div>
+      </fieldset>
+
       <label class="toggle-row">
         <span>
           <strong>影を表示</strong>
@@ -98,6 +106,6 @@
   </div>
 
   <script src="../utils/theme.js"></script>
-  <script src="preview.js?v=undo-expiry"></script>
+  <script src="preview.js?v=serial-polling"></script>
 </body>
 </html>

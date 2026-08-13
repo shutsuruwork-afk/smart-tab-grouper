@@ -6,10 +6,17 @@ let currentUndoOperationId = null;
 let currentUndoExpiresAt = null;
 let availableCategories = [];
 let currentConfirmationToken = null;
-let pollTimer = null;
 let completionExpiryTimer = null;
 let completionActionHadFocus = false;
 let openCorrectionMenu = null;
+const progressPoller = SmartTabSerialPoller.create({
+  load: safeReloadPopupState,
+  onValue: (state) => {
+    if (state && !state.inProgress) renderPopupState(state);
+  },
+  shouldContinue: (state) => !state || state.inProgress === true,
+  interval: 500
+});
 
 const themeReady = initializeTheme();
 
@@ -65,6 +72,7 @@ function renderPopupState(state) {
 }
 
 function renderConfirmation(previewState = {}, recovery = null) {
+  stopProgressPolling();
   clearCompletionExpiryTimer();
   showOnly('confirmationView');
   undoAvailable = false;
@@ -122,6 +130,7 @@ function renderConfirmation(previewState = {}, recovery = null) {
 }
 
 function renderProgress(operationType = 'organize') {
+  stopProgressPolling();
   clearCompletionExpiryTimer();
   showOnly('progressView');
   undoAvailable = false;
@@ -138,6 +147,7 @@ function renderProgress(operationType = 'organize') {
 }
 
 function renderCompletion(undoState, fallbackMessage = '') {
+  stopProgressPolling();
   clearCompletionExpiryTimer();
   showOnly('completionView');
   currentConfirmationToken = null;
@@ -586,14 +596,11 @@ async function openSettings() {
 }
 
 function startProgressPolling() {
-  clearInterval(pollTimer);
-  pollTimer = setInterval(async () => {
-    const state = await safeReloadPopupState();
-    if (!state || state.inProgress) return;
-    clearInterval(pollTimer);
-    pollTimer = null;
-    renderPopupState(state);
-  }, 500);
+  progressPoller.start();
+}
+
+function stopProgressPolling() {
+  progressPoller.stop();
 }
 
 async function safeReloadPopupState() {
@@ -636,6 +643,7 @@ function sendAction(message) {
 }
 
 function closePopup(reason) {
+  stopProgressPolling();
   if (preview && window.parent !== window) {
     window.parent.postMessage({
       source: 'smart-tab-grouper-preview',
@@ -684,6 +692,8 @@ function createPreviewAdapter() {
   let lostOrganizeResponse = false;
   let lostCorrectionResponse = false;
   let staleOrganizeResponse = false;
+  const startupProgress = params.get('startup') === 'progress';
+  const startupCompletesAt = Date.now() + 3000;
 
   function loadPreviewUndo() {
     const undo = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
@@ -692,33 +702,78 @@ function createPreviewAdapter() {
     return null;
   }
 
+  function createPreviewUndo() {
+    return {
+      available: true,
+      operationId: 'preview-operation',
+      windowId: 1,
+      expiresAt: Date.now() + undoTtl,
+      summary: {
+        count: 4,
+        groups: [
+          {
+            categoryId: 'cat_dev', name: '💻 開発・プログラミング', color: 'purple', count: 2,
+            tabs: [
+              { tabId: 1, title: 'GitHub — smart-tab-grouper', url: 'https://github.com/example/smart-tab-grouper' },
+              { tabId: 2, title: 'JavaScript API', url: 'https://developer.example.com/api' }
+            ]
+          },
+          {
+            categoryId: 'cat_ai_search', name: '🔍 検索・AIアシスタント', color: 'cyan', count: 1,
+            tabs: [{ tabId: 3, title: '検索結果', url: 'https://search.example.com/' }]
+          },
+          {
+            categoryId: 'cat_news', name: '📰 ニュース・情報', color: 'orange', count: 1,
+            tabs: [{ tabId: 4, title: '今日のニュース', url: 'https://news.example.com/today' }]
+          }
+        ]
+      }
+    };
+  }
+
+  function buildPreviewPopupState({ undo = null, inProgress = false } = {}) {
+    return {
+      success: true,
+      windowId: 1,
+      undo,
+      inProgress,
+      operationType: inProgress ? 'organize' : null,
+      preview: {
+        count: 4,
+        groupCount: 3,
+        unresolved: 4,
+        contentClassificationEnabled: true,
+        contentClassificationAvailable: true,
+        contentLimitExceeded: false,
+        confirmationToken: { version: 1, windowId: 1, digest: 'popup-preview' }
+      },
+      categories: [
+        { id: 'cat_dev', name: '💻 開発・プログラミング', color: 'purple' },
+        { id: 'cat_ai_search', name: '🔍 検索・AIアシスタント', color: 'cyan' },
+        { id: 'cat_news', name: '📰 ニュース・情報', color: 'orange' },
+        { id: 'cat_shopping', name: '🛒 ショッピング', color: 'yellow' }
+      ]
+    };
+  }
+
   return Object.freeze({
     theme: theme === 'dark' ? 'dark' : 'light',
     uiTheme,
     async send(message) {
       if (message.action === 'GET_POPUP_STATE') {
-        const undo = loadPreviewUndo();
-        return {
-          success: true,
-          windowId: 1,
-          undo,
-          inProgress: false,
-          preview: {
-            count: 4,
-            groupCount: 3,
-            unresolved: 4,
-            contentClassificationEnabled: true,
-            contentClassificationAvailable: true,
-            contentLimitExceeded: false,
-            confirmationToken: { version: 1, windowId: 1, digest: 'popup-preview' }
-          },
-          categories: [
-            { id: 'cat_dev', name: '💻 開発・プログラミング', color: 'purple' },
-            { id: 'cat_ai_search', name: '🔍 検索・AIアシスタント', color: 'cyan' },
-            { id: 'cat_news', name: '📰 ニュース・情報', color: 'orange' },
-            { id: 'cat_shopping', name: '🛒 ショッピング', color: 'yellow' }
-          ]
-        };
+        if (startupProgress) {
+          await wait(900);
+          if (Date.now() < startupCompletesAt) {
+            return buildPreviewPopupState({ inProgress: true });
+          }
+          let undo = loadPreviewUndo();
+          if (!undo) {
+            undo = createPreviewUndo();
+            sessionStorage.setItem(storageKey, JSON.stringify(undo));
+          }
+          return buildPreviewPopupState({ undo });
+        }
+        return buildPreviewPopupState({ undo: loadPreviewUndo() });
       }
       await wait(actionDelay);
       if (
@@ -791,32 +846,7 @@ function createPreviewAdapter() {
         return { success: true, undo, message: `${getHostname(tab.url)} を「${target.name}」へ登録しました。` };
       }
       if (message.action === 'ORGANIZE_CURRENT_WINDOW_CONFIRMED') {
-        const undo = {
-          available: true,
-          operationId: 'preview-operation',
-          windowId: 1,
-          expiresAt: Date.now() + undoTtl,
-          summary: {
-            count: 4,
-            groups: [
-              {
-                categoryId: 'cat_dev', name: '💻 開発・プログラミング', color: 'purple', count: 2,
-                tabs: [
-                  { tabId: 1, title: 'GitHub — smart-tab-grouper', url: 'https://github.com/example/smart-tab-grouper' },
-                  { tabId: 2, title: 'JavaScript API', url: 'https://developer.example.com/api' }
-                ]
-              },
-              {
-                categoryId: 'cat_ai_search', name: '🔍 検索・AIアシスタント', color: 'cyan', count: 1,
-                tabs: [{ tabId: 3, title: '検索結果', url: 'https://search.example.com/' }]
-              },
-              {
-                categoryId: 'cat_news', name: '📰 ニュース・情報', color: 'orange', count: 1,
-                tabs: [{ tabId: 4, title: '今日のニュース', url: 'https://news.example.com/today' }]
-              }
-            ]
-          }
-        };
+        const undo = createPreviewUndo();
         sessionStorage.setItem(storageKey, JSON.stringify(undo));
         if (params.get('loss') === 'organize' && !lostOrganizeResponse) {
           lostOrganizeResponse = true;
