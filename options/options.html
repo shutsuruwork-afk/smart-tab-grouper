@@ -121,11 +121,12 @@
             <span class="content-scan-mark" aria-hidden="true">Aa</span>
             <span class="toggle-setting-copy">
               <strong>未登録サイトも自動分類</strong>
-              <small>ページの説明と見出しを端末内で判定します。既定はオフ・未分類30件までです。</small>
+              <small>ページの説明と見出しを端末内で判定します。オンにするとChromeがサイトアクセスを確認します。</small>
             </span>
             <input id="contentClassificationToggle" type="checkbox">
             <span class="switch-control" aria-hidden="true"><i></i></span>
           </label>
+          <p id="contentClassificationAccessStatus" class="content-access-status" role="status" aria-live="polite"></p>
 
           <label class="toggle-setting-card" for="groupUnmatchedToggle">
             <span class="others-color-dot" aria-hidden="true"></span>

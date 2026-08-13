@@ -71,27 +71,32 @@ function renderConfirmation(previewState = {}, recovery = null) {
   const groups = Number.isInteger(previewState.groupCount) ? previewState.groupCount : 0;
   const unresolved = Number.isInteger(previewState.unresolved) ? previewState.unresolved : 0;
   const hasContentCandidates = previewState.contentClassificationEnabled && unresolved > 0;
-  const contentMayAdd = hasContentCandidates && !previewState.contentLimitExceeded;
+  const contentAvailable = previewState.contentClassificationAvailable !== false;
+  const contentMayAdd = hasContentCandidates && contentAvailable && !previewState.contentLimitExceeded;
 
   if (count === null) {
     title.textContent = '本当に整理しますか？';
     description.textContent = '現在のウィンドウのタブをグループに整理します。';
     confirmButton.disabled = false;
   } else if (count === 0 && !contentMayAdd) {
-    title.textContent = hasContentCandidates && previewState.contentLimitExceeded
+    title.textContent = hasContentCandidates && (!contentAvailable || previewState.contentLimitExceeded)
       ? '補助分類を実行できません'
       : '整理できるタブはありません';
-    description.textContent = hasContentCandidates && previewState.contentLimitExceeded
-      ? '補助分類の候補が30件を超え、登録済みルールに一致するタブもありません。'
-      : '未整理のタブに、登録済みルールと一致するものはありません。';
+    description.textContent = hasContentCandidates && !contentAvailable
+      ? 'サイトアクセスが解除されています。設定で未登録サイトの自動分類をオンにし直してください。'
+      : hasContentCandidates && previewState.contentLimitExceeded
+        ? '補助分類の候補が30件を超え、登録済みルールに一致するタブもありません。'
+        : '未整理のタブに、登録済みルールと一致するものはありません。';
     confirmButton.disabled = true;
   } else {
     title.textContent = `${count}件のタブを整理しますか？`;
     const groupText = groups > 0 ? `${groups}グループへ整理する予定です。` : '';
     const assistText = hasContentCandidates
-      ? previewState.contentLimitExceeded
-        ? '補助分類は候補が30件を超えたため使用しません。'
-        : '補助分類の結果で対象が増える場合があります。'
+      ? !contentAvailable
+        ? '補助分類はサイトアクセスがないため使用しません。'
+        : previewState.contentLimitExceeded
+          ? '補助分類は候補が30件を超えたため使用しません。'
+          : '補助分類の結果で対象が増える場合があります。'
       : '';
     description.textContent = [groupText, assistText].filter(Boolean).join(' ')
       || '補助分類で対象を確認します。';
@@ -534,6 +539,7 @@ function createPreviewAdapter() {
             groupCount: 3,
             unresolved: 4,
             contentClassificationEnabled: true,
+            contentClassificationAvailable: true,
             contentLimitExceeded: false
           },
           categories: [

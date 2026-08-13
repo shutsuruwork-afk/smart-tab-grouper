@@ -2,6 +2,7 @@ import { DEFAULT_CATEGORIES, DEFAULT_SETTINGS } from './utils/default_rules.js';
 import { classifyTab } from './utils/classifier.js';
 import {
   createContentAssistedClassifier,
+  hasContentClassificationAccess,
   prepareContentClassifications
 } from './utils/content_classifier.js';
 import {
@@ -211,11 +212,12 @@ chrome.windows.onRemoved.addListener((windowId) => {
 async function getPopupState(windowId = null) {
   const targetWindowId = Number.isInteger(windowId) ? windowId : (await chrome.windows.getCurrent()).id;
   const recovery = await recoverStaleOperation(chrome);
-  const [{ categories, settings }, tabs, undo, activeOperation] = await Promise.all([
+  const [{ categories, settings }, tabs, undo, activeOperation, contentAccessGranted] = await Promise.all([
     getStorageConfig(),
     chrome.tabs.query({ windowId: targetWindowId }),
     getUndoState(chrome, targetWindowId),
-    getActiveOperation(chrome)
+    getActiveOperation(chrome),
+    hasContentClassificationAccess(chrome)
   ]);
   const noneGroupId = chrome.tabGroups.TAB_GROUP_ID_NONE;
   const cheapSettings = { ...settings, groupUnmatchedAsOthers: settings.groupUnmatchedAsOthers === true };
@@ -228,6 +230,8 @@ async function getPopupState(windowId = null) {
     && classifyTab(tab, categories, { ...settings, groupUnmatchedAsOthers: false }) === null
   ).map((tab) => tab.id);
   const unresolved = unresolvedTabIds.length;
+  const contentClassificationEnabled = settings.contentClassificationEnabled === true;
+  const contentClassificationAvailable = contentClassificationEnabled && contentAccessGranted;
 
   return {
     success: true,
@@ -246,8 +250,9 @@ async function getPopupState(windowId = null) {
       eligibleCount,
       unresolvedTabIds,
       unresolved,
-      contentClassificationEnabled: settings.contentClassificationEnabled === true,
-      contentLimitExceeded: settings.contentClassificationEnabled === true && unresolved > 30
+      contentClassificationEnabled,
+      contentClassificationAvailable,
+      contentLimitExceeded: contentClassificationAvailable && unresolved > 30
     },
     categories: categories
       .filter((category) => category.enabled !== false)

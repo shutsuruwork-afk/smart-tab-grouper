@@ -5,6 +5,7 @@ import {
   CONTENT_CLASSIFICATION_MAX_TABS,
   classifyContentSignals,
   createContentAssistedClassifier,
+  hasContentClassificationAccess,
   prepareContentClassifications
 } from '../utils/content_classifier.js';
 import { DEFAULT_SETTINGS } from '../utils/default_rules.js';
@@ -46,6 +47,37 @@ test('補助分類は既定でオフ', async () => {
   assert.equal(DEFAULT_SETTINGS.contentClassificationEnabled, false);
   assert.equal(result.status, 'disabled');
   assert.equal(permissionChecks, 0);
+});
+
+test('権限確認APIの拒否や失敗はアクセスなしとして扱う', async () => {
+  assert.equal(await hasContentClassificationAccess({
+    permissions: { contains: async () => false }
+  }), false);
+  assert.equal(await hasContentClassificationAccess({
+    permissions: { contains: async () => { throw new Error('unavailable'); } }
+  }), false);
+});
+
+test('オンでもサイトアクセスがなければページを読み取らない', async () => {
+  let executions = 0;
+  const chromeApi = createChromeFake({ executeScript: async () => { executions += 1; } });
+  chromeApi.permissions.contains = async () => false;
+  const result = await prepareContentClassifications({
+    chromeApi,
+    tabs: [{
+      id: 1,
+      index: 0,
+      windowId: 1,
+      groupId: -1,
+      pinned: false,
+      url: 'https://unknown.example/',
+      title: 'Unknown'
+    }],
+    categories,
+    settings: { contentClassificationEnabled: true }
+  });
+  assert.equal(result.status, 'permission-missing');
+  assert.equal(executions, 0);
 });
 
 test('説明と見出しに複数の根拠がある場合だけ分類する', () => {

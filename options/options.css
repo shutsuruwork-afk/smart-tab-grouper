@@ -1269,6 +1269,28 @@ p {
   transform: translateX(18px);
 }
 
+.toggle-setting-card.is-pending {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.content-access-status {
+  min-height: 18px;
+  max-width: 650px;
+  margin: 7px 16px -8px 64px;
+  color: var(--on-surface-secondary);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.content-access-status[data-state="warning"] {
+  color: var(--error);
+}
+
+.content-access-status[data-state="ready"] {
+  color: var(--primary);
+}
+
 .domain-entry {
   max-width: 610px;
   margin-top: 18px;

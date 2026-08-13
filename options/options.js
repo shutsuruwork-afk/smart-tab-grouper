@@ -70,6 +70,7 @@ const GROUP_COLORS = [
 ];
 
 const PREVIEW_STORAGE_KEY = 'smart-tab-grouper-options-preview';
+const PREVIEW_CONTENT_ACCESS_KEY = 'smart-tab-grouper-options-preview-content-access';
 const MANAGED_GROUPS_STORAGE_KEY = 'smartTabGrouperManagedGroupsV1';
 const UNGROUPED_SELECTION_ID = 'ungrouped';
 const DEFAULT_ORGANIZE_SETTINGS = Object.freeze({
@@ -103,6 +104,7 @@ const behaviorEditor = document.getElementById('behaviorEditor');
 const groupEditor = document.getElementById('groupEditor');
 const themeOptions = document.getElementById('themeOptions');
 const contentClassificationToggle = document.getElementById('contentClassificationToggle');
+const contentClassificationAccessStatus = document.getElementById('contentClassificationAccessStatus');
 const groupUnmatchedToggle = document.getElementById('groupUnmatchedToggle');
 const behaviorOrganizeButton = document.getElementById('behaviorOrganizeButton');
 const domainInput = document.getElementById('domainInput');
@@ -177,6 +179,8 @@ let organizerDialogReturnFocus = null;
 let pendingGroupEdit = null;
 let selectedGroupEditColor = 'grey';
 let groupEditSaving = false;
+let contentClassificationAccessGranted = false;
+let contentClassificationAccessChecking = false;
 
 document.addEventListener('DOMContentLoaded', initialize);
 
@@ -185,19 +189,27 @@ async function initialize() {
   const undoShortcut = SmartTabKeyboardShortcuts.getUndoShortcut();
   organizerUndoHint.querySelector('[data-undo-modifier]').textContent = undoShortcut.modifier;
   organizerUndoHint.setAttribute('aria-keyshortcuts', undoShortcut.ariaKeyShortcuts);
-  const stored = await storage.load();
+  const [stored, accessGranted] = await Promise.all([
+    storage.load(),
+    storage.hasContentClassificationAccess()
+  ]);
   categories = stored.categories;
   uiTheme = SmartTabTheme.normalizeConfig(stored.uiTheme);
-  organizeSettings = normalizeOrganizeSettings(stored.settings);
+  const storedOrganizeSettings = normalizeOrganizeSettings(stored.settings);
+  organizeSettings = clone(storedOrganizeSettings);
   savedCategories = clone(categories);
   savedUiTheme = clone(uiTheme);
-  savedOrganizeSettings = clone(organizeSettings);
+  savedOrganizeSettings = clone(storedOrganizeSettings);
+  contentClassificationAccessGranted = accessGranted;
+  if (organizeSettings.contentClassificationEnabled && !contentClassificationAccessGranted) {
+    organizeSettings.contentClassificationEnabled = false;
+  }
   selectedCategoryId = categories[0]?.id || null;
   applyUiTheme();
 
   renderCategoryList();
   renderEditor();
-  updateDirtyState();
+  markDirty();
 
   workspacePickerButton.addEventListener('click', toggleWorkspaceMenu);
   settingsWorkspaceOption.addEventListener('click', () => switchWorkspace('settings', { restoreFocus: true }));
@@ -262,6 +274,7 @@ async function initialize() {
   });
   await switchWorkspace(activeWorkspace, { updateHash: false });
   setupOrganizerChangeListeners();
+  setupContentAccessListeners();
 
   globalThis.matchMedia?.('(prefers-color-scheme: dark)').addEventListener('change', () => {
     applyUiTheme();
@@ -574,11 +587,22 @@ async function openOrganizeDialog({ refresh = true } = {}) {
   organizerDialogReturnFocus = organizeWindowButton;
   organizeDialogOverline.textContent = 'UNGROUPED TABS';
   organizeDialogTitle.textContent = '本当に整理しますか？';
+  const hasContentCandidates = preview?.contentClassificationEnabled
+    && Number(preview?.unresolved) > 0;
+  const assistText = hasContentCandidates
+    ? preview?.contentClassificationAvailable === false
+      ? ' 補助分類はサイトアクセスがないため使用しません。'
+      : preview?.contentLimitExceeded
+        ? ' 補助分類は候補が30件を超えたため使用しません。'
+        : ' 補助分類により対象が増える場合があります。'
+    : '';
   organizeDialogDescription.textContent = count > 0
-    ? `${count}件の未グループタブを${groupCount}グループへ分類する予定です。${preview?.contentClassificationEnabled && preview?.unresolved > 0 ? ' 補助分類により対象が増える場合があります。' : ''}`
+    ? `${count}件の未グループタブを${groupCount}グループへ分類する予定です。${assistText}`
     : contentMayAdd
       ? '補助分類で未グループタブを確認し、対象が見つかった場合だけ分類します。'
-      : '現在の設定で分類できる未グループタブはありません。';
+      : hasContentCandidates && preview?.contentClassificationAvailable === false
+        ? 'サイトアクセスが解除されています。設定で未登録サイトの自動分類をオンにし直してください。'
+        : '現在の設定で分類できる未グループタブはありません。';
   confirmOrganizeButton.textContent = '整理';
   confirmOrganizeButton.disabled = count === 0 && !contentMayAdd;
   if (typeof organizeDialog.showModal === 'function') organizeDialog.showModal();
@@ -923,6 +947,7 @@ function hasOrganizerPotentialTargets() {
 
 function contentAssistMayAdd(preview) {
   return preview?.contentClassificationEnabled === true
+    && preview?.contentClassificationAvailable !== false
     && preview?.contentLimitExceeded !== true
     && Number(preview?.unresolved) > 0;
 }
@@ -947,6 +972,24 @@ function setupOrganizerChangeListeners() {
       || areaName === 'session'
     ) schedule();
   });
+}
+
+function setupContentAccessListeners() {
+  if (previewMode || !globalThis.chrome?.permissions) return;
+  const refresh = () => refreshContentAccessState();
+  chrome.permissions.onAdded?.addListener(refresh);
+  chrome.permissions.onRemoved?.addListener(refresh);
+}
+
+async function refreshContentAccessState() {
+  const granted = await storage.hasContentClassificationAccess();
+  if (granted === contentClassificationAccessGranted) return;
+  contentClassificationAccessGranted = granted;
+  if (!granted && organizeSettings.contentClassificationEnabled) {
+    organizeSettings.contentClassificationEnabled = false;
+  }
+  if (selectedView === 'behavior') renderBehaviorSettings();
+  markDirty();
 }
 
 function scheduleOrganizerRefresh(delay = 180) {
@@ -1053,8 +1096,39 @@ function renderEditor() {
 
 function renderBehaviorSettings() {
   contentClassificationToggle.checked = organizeSettings.contentClassificationEnabled;
+  contentClassificationToggle.disabled = contentClassificationAccessChecking;
+  contentClassificationToggle.setAttribute('aria-busy', String(contentClassificationAccessChecking));
+  contentClassificationToggle.closest('.toggle-setting-card')
+    ?.classList.toggle('is-pending', contentClassificationAccessChecking);
   groupUnmatchedToggle.checked = organizeSettings.groupUnmatchedAsOthers;
+  renderContentAccessStatus();
   updateBehaviorOrganizeButton();
+}
+
+function renderContentAccessStatus() {
+  let message = '既定はオフ・未分類30件までです。ページ内容は端末外へ送信しません。';
+  let state = '';
+
+  if (contentClassificationAccessChecking) {
+    message = 'Chromeでサイトアクセスを確認しています…';
+  } else if (organizeSettings.contentClassificationEnabled && contentClassificationAccessGranted) {
+    message = savedOrganizeSettings.contentClassificationEnabled
+      ? 'サイトアクセスは許可されています。'
+      : 'サイトアクセスを許可しました。保存すると自動分類が有効になります。';
+    state = 'ready';
+  } else if (savedOrganizeSettings.contentClassificationEnabled && !contentClassificationAccessGranted) {
+    message = 'Chromeでサイトアクセスが解除されています。オンにし直すか、保存して自動分類をオフにしてください。';
+    state = 'warning';
+  } else if (!organizeSettings.contentClassificationEnabled && savedOrganizeSettings.contentClassificationEnabled) {
+    message = '保存すると自動分類をオフにし、サイトアクセスを解除します。';
+  } else if (!organizeSettings.contentClassificationEnabled && contentClassificationAccessGranted) {
+    message = '自動分類はオフですが、サイトアクセスが許可されたままです。';
+    state = 'warning';
+  }
+
+  contentClassificationAccessStatus.textContent = message;
+  if (state) contentClassificationAccessStatus.dataset.state = state;
+  else delete contentClassificationAccessStatus.dataset.state;
 }
 
 async function organizeFromBehaviorSettings() {
@@ -1325,8 +1399,49 @@ function changeUnmatchedBehavior(event) {
   markDirty();
 }
 
-function changeContentClassificationBehavior(event) {
-  organizeSettings.contentClassificationEnabled = event.target.checked;
+async function changeContentClassificationBehavior(event) {
+  const wantsEnabled = event.target.checked;
+  if (!wantsEnabled) {
+    organizeSettings.contentClassificationEnabled = false;
+    if (!savedOrganizeSettings.contentClassificationEnabled && contentClassificationAccessGranted) {
+      contentClassificationAccessChecking = true;
+      renderBehaviorSettings();
+      try {
+        const removed = await storage.removeContentClassificationAccess();
+        if (removed) contentClassificationAccessGranted = false;
+        else showToast('サイトアクセスはChromeの拡張機能設定から解除できます');
+      } catch (error) {
+        showToast('サイトアクセスはChromeの拡張機能設定から解除できます');
+      } finally {
+        contentClassificationAccessChecking = false;
+      }
+    }
+    renderBehaviorSettings();
+    markDirty();
+    return;
+  }
+
+  organizeSettings.contentClassificationEnabled = true;
+  if (!contentClassificationAccessGranted) {
+    contentClassificationAccessChecking = true;
+    renderBehaviorSettings();
+    let granted = false;
+    try {
+      granted = await storage.requestContentClassificationAccess();
+    } catch (error) {
+      granted = false;
+    }
+    contentClassificationAccessGranted = granted;
+    contentClassificationAccessChecking = false;
+    if (!granted) {
+      organizeSettings.contentClassificationEnabled = false;
+      showToast('サイトアクセスが許可されなかったため、オフのままです');
+    } else {
+      showToast(savedOrganizeSettings.contentClassificationEnabled
+        ? 'サイトアクセスを許可しました'
+        : 'サイトアクセスを許可しました。設定を保存してください');
+    }
+  }
   renderBehaviorSettings();
   markDirty();
 }
@@ -1399,18 +1514,30 @@ async function saveChanges() {
   changeSummary.textContent = '保存しています…';
 
   try {
-    if (
-      organizeSettings.contentClassificationEnabled
-      && !savedOrganizeSettings.contentClassificationEnabled
-    ) {
+    if (organizeSettings.contentClassificationEnabled && !contentClassificationAccessGranted) {
+      contentClassificationAccessChecking = true;
+      renderBehaviorSettings();
       const granted = await storage.requestContentClassificationAccess();
+      contentClassificationAccessChecking = false;
+      contentClassificationAccessGranted = granted;
       if (!granted) {
-        organizeSettings.contentClassificationEnabled = savedOrganizeSettings.contentClassificationEnabled;
+        organizeSettings.contentClassificationEnabled = false;
         renderBehaviorSettings();
         markDirty();
         showToast('サイトへのアクセスが許可されなかったため、有効にできませんでした');
         return false;
       }
+    }
+    if (
+      organizeSettings.contentClassificationEnabled
+      && !await storage.hasContentClassificationAccess()
+    ) {
+      contentClassificationAccessGranted = false;
+      organizeSettings.contentClassificationEnabled = false;
+      renderBehaviorSettings();
+      markDirty();
+      showToast('サイトアクセスが変更されました。もう一度オンにしてください');
+      return false;
     }
 
     await storage.save({ categories, uiTheme, settings: organizeSettings });
@@ -1421,6 +1548,7 @@ async function saveChanges() {
     ) {
       try {
         accessRemoved = await storage.removeContentClassificationAccess();
+        if (accessRemoved) contentClassificationAccessGranted = false;
       } catch (error) {
         accessRemoved = false;
       }
@@ -1430,6 +1558,7 @@ async function saveChanges() {
     savedOrganizeSettings = clone(organizeSettings);
     dirty = false;
     updateDirtyState();
+    if (selectedView === 'behavior') renderBehaviorSettings();
     showToast(
       !accessRemoved
         ? '設定は保存しました。サイトアクセスはChromeの拡張機能設定から解除できます'
@@ -1437,26 +1566,44 @@ async function saveChanges() {
     );
     return true;
   } catch (error) {
+    contentClassificationAccessChecking = false;
     dirty = true;
     updateDirtyState();
+    if (selectedView === 'behavior') renderBehaviorSettings();
     showToast('保存できませんでした');
     return false;
   }
 }
 
-function discardChanges() {
+async function discardChanges() {
+  const removeDraftAccess = contentClassificationAccessGranted
+    && !savedOrganizeSettings.contentClassificationEnabled;
   const currentSelection = selectedCategoryId;
   categories = clone(savedCategories);
   uiTheme = clone(savedUiTheme);
   organizeSettings = clone(savedOrganizeSettings);
+  if (removeDraftAccess) {
+    contentClassificationAccessChecking = true;
+    try {
+      const removed = await storage.removeContentClassificationAccess();
+      if (removed) contentClassificationAccessGranted = false;
+      else showToast('サイトアクセスはChromeの拡張機能設定から解除できます');
+    } catch (error) {
+      showToast('サイトアクセスはChromeの拡張機能設定から解除できます');
+    } finally {
+      contentClassificationAccessChecking = false;
+    }
+  }
+  if (organizeSettings.contentClassificationEnabled && !contentClassificationAccessGranted) {
+    organizeSettings.contentClassificationEnabled = false;
+  }
   selectedCategoryId = categories.some((item) => item.id === currentSelection)
     ? currentSelection
     : categories[0]?.id;
-  dirty = false;
   applyUiTheme();
   renderCategoryList();
   renderEditor();
-  updateDirtyState();
+  markDirty();
 }
 
 function markDirty() {
@@ -1483,7 +1630,7 @@ function updateDirtyState() {
 function updateBehaviorOrganizeButton() {
   if (!behaviorOrganizeButton) return;
   behaviorOrganizeButton.textContent = dirty ? '保存して分類' : '分類を実行';
-  behaviorOrganizeButton.disabled = behaviorActionRunning;
+  behaviorOrganizeButton.disabled = behaviorActionRunning || contentClassificationAccessChecking;
 }
 
 function showDomainFeedback(message, success = false) {
@@ -1560,6 +1707,12 @@ function createStorageAdapter() {
           origins: ['http://*/*', 'https://*/*']
         });
       },
+      async hasContentClassificationAccess() {
+        return chrome.permissions.contains({
+          permissions: ['scripting'],
+          origins: ['http://*/*', 'https://*/*']
+        }).catch(() => false);
+      },
       async removeContentClassificationAccess() {
         const request = {
           permissions: ['scripting'],
@@ -1571,6 +1724,7 @@ function createStorageAdapter() {
     };
   }
 
+  let previewContentAccessGranted = window.localStorage.getItem(PREVIEW_CONTENT_ACCESS_KEY) === 'granted';
   return {
     async load() {
       try {
@@ -1604,9 +1758,16 @@ function createStorageAdapter() {
       }));
     },
     async requestContentClassificationAccess() {
+      previewContentAccessGranted = true;
+      window.localStorage.setItem(PREVIEW_CONTENT_ACCESS_KEY, 'granted');
       return true;
     },
+    async hasContentClassificationAccess() {
+      return previewContentAccessGranted;
+    },
     async removeContentClassificationAccess() {
+      previewContentAccessGranted = false;
+      window.localStorage.removeItem(PREVIEW_CONTENT_ACCESS_KEY);
       return true;
     }
   };
@@ -1752,7 +1913,8 @@ function createOrganizerAdapter() {
           eligibleCount: previewOrganized ? 0 : 2,
           unresolvedTabIds: [],
           unresolved: 0,
-          contentClassificationEnabled: false
+          contentClassificationEnabled: false,
+          contentClassificationAvailable: false
         },
         inProgress: false,
         recovery: null,

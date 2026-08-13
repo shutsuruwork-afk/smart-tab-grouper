@@ -131,15 +131,7 @@ export async function prepareContentClassifications({
     return buildResult('disabled', classifications, 0, 0);
   }
 
-  let hasAccess = false;
-  try {
-    hasAccess = await chromeApi.permissions.contains({
-      permissions: ['scripting'],
-      origins: ['http://*/*', 'https://*/*']
-    });
-  } catch (error) {
-    return buildResult('permission-missing', classifications, 0, 0);
-  }
+  const hasAccess = await hasContentClassificationAccess(chromeApi);
   if (!hasAccess) return buildResult('permission-missing', classifications, 0, 0);
 
   const unresolved = tabs.filter((tab) => {
@@ -215,6 +207,17 @@ export async function prepareContentClassifications({
     ...buildResult(budgetExhausted ? 'budget-exhausted' : 'ready', classifications, attempted, unresolved.length),
     cacheHits
   };
+}
+
+export async function hasContentClassificationAccess(chromeApi) {
+  try {
+    return await chromeApi.permissions.contains({
+      permissions: ['scripting'],
+      origins: ['http://*/*', 'https://*/*']
+    });
+  } catch (error) {
+    return false;
+  }
 }
 
 function getCategoryContentKeywords(category) {
