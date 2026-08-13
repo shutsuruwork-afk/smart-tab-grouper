@@ -1,4 +1,5 @@
 import { DEFAULT_CATEGORIES, DEFAULT_SETTINGS } from './utils/default_rules.js';
+import { normalizeCategories, normalizeRuleSettings } from './utils/category_rules.js';
 import './utils/settings_storage.js';
 import { classifyTab } from './utils/classifier.js';
 import {
@@ -78,8 +79,10 @@ chrome.runtime.onInstalled.addListener(async () => {
     settingsStorage.loadCategories(chrome.storage.sync, null)
   ]);
   const settings = normalizeSettings(data.settings);
-  const categories = Array.isArray(storedCategories) ? storedCategories : DEFAULT_CATEGORIES;
-  const categoriesNeedWrite = !data[settingsStorage.MANIFEST_KEY] || !Array.isArray(storedCategories);
+  const categories = normalizeCategories(storedCategories, DEFAULT_CATEGORIES);
+  const categoriesNeedWrite = !data[settingsStorage.MANIFEST_KEY]
+    || !Array.isArray(storedCategories)
+    || JSON.stringify(categories) !== JSON.stringify(storedCategories);
   const settingsNeedWrite = JSON.stringify(settings) !== JSON.stringify(data.settings || {});
 
   if (categoriesNeedWrite) {
@@ -96,23 +99,17 @@ chrome.runtime.onInstalled.addListener(async () => {
 });
 
 function normalizeSettings(value = {}) {
-  return {
-    ...DEFAULT_SETTINGS,
-    ...value,
-    groupByDomainAsFallback: false,
-    contentClassificationEnabled: value.contentClassificationEnabled === true,
-    groupUnmatchedAsOthers: value.groupUnmatchedAsOthers === true
-  };
+  return normalizeRuleSettings(value, DEFAULT_SETTINGS);
 }
 
 // Helper: Get config
 async function getStorageConfig() {
-  const [data, categories] = await Promise.all([
+  const [data, storedCategories] = await Promise.all([
     chrome.storage.sync.get(['settings']),
     settingsStorage.loadCategories(chrome.storage.sync, DEFAULT_CATEGORIES)
   ]);
   return {
-    categories,
+    categories: normalizeCategories(storedCategories, DEFAULT_CATEGORIES),
     settings: normalizeSettings(data.settings)
   };
 }

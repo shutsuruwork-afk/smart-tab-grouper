@@ -34,7 +34,7 @@ export function classifyTab(tab, categories, settings = {}) {
   // 0. Exclusion / Blacklist Check (誤検知・除外リスト)
   if (settings.exclusions && Array.isArray(settings.exclusions)) {
     const isExcluded = settings.exclusions.some(item => {
-      const clean = item.trim().toLowerCase();
+      const clean = String(item ?? '').trim().toLowerCase();
       if (!clean) return false;
       return hostname === clean || hostname.endsWith("." + clean) || urlString.toLowerCase().includes(clean);
     });
@@ -43,7 +43,8 @@ export function classifyTab(tab, categories, settings = {}) {
     }
   }
 
-  const activeCategories = categories.filter(c => c.enabled);
+  const activeCategories = (Array.isArray(categories) ? categories : [])
+    .filter((category) => category?.enabled !== false);
 
   // 1. PRIORITY 1: Longest registered domain match.
   // A specific rule such as mail.google.com wins over google.com.
@@ -98,8 +99,9 @@ export function classifyTab(tab, categories, settings = {}) {
 
 export function findLongestDomainMatch(hostname, categories) {
   let best = null;
-  for (let categoryIndex = 0; categoryIndex < categories.length; categoryIndex += 1) {
-    const category = categories[categoryIndex];
+  const source = Array.isArray(categories) ? categories : [];
+  for (let categoryIndex = 0; categoryIndex < source.length; categoryIndex += 1) {
+    const category = source[categoryIndex];
     if (!Array.isArray(category.domains)) continue;
     for (const rawDomain of category.domains) {
       const domain = String(rawDomain || '').trim().toLowerCase().replace(/^\*\./, '');

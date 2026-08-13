@@ -1,61 +1,7 @@
-const FALLBACK_CATEGORIES = [
-  {
-    id: 'cat_dev',
-    name: '💻 開発・プログラミング',
-    color: 'purple',
-    enabled: true,
-    domains: ['github.com', 'github.io', 'gitlab.com', 'stackoverflow.com', 'qiita.com', 'zenn.dev', 'developer.mozilla.org', 'docs.python.org', 'npmjs.com', 'localhost', '127.0.0.1'],
-    titleKeywords: ['GitHub', 'Stack Overflow', 'Qiita', 'Zenn', 'MDN Web Docs']
-  },
-  {
-    id: 'cat_novel',
-    name: '✍️ 小説執筆・リサーチ',
-    color: 'green',
-    enabled: true,
-    domains: ['syosetu.com', 'kakuyomu.jp', 'alphapolis.co.jp', 'pixiv.net', 'weblio.jp', 'dictionary.goo.ne.jp', 'wikipedia.org', 'notion.so', 'docs.google.com'],
-    titleKeywords: ['小説家になろう', 'カクヨム', '類語辞典', 'Wikipedia']
-  },
-  {
-    id: 'cat_ai_search',
-    name: '🔍 検索・AIアシスタント',
-    color: 'cyan',
-    enabled: true,
-    domains: ['google.com', 'google.co.jp', 'bing.com', 'chatgpt.com', 'claude.ai', 'perplexity.ai', 'gemini.google.com'],
-    titleKeywords: ['Google 検索', 'ChatGPT', 'Claude', 'Gemini']
-  },
-  {
-    id: 'cat_media',
-    name: '🎬 動画・メディア',
-    color: 'red',
-    enabled: true,
-    domains: ['youtube.com', 'youtu.be', 'netflix.com', 'twitch.tv', 'nicovideo.jp', 'tver.jp', 'spotify.com'],
-    titleKeywords: ['YouTube', 'Twitch', 'Netflix']
-  },
-  {
-    id: 'cat_sns',
-    name: '💬 SNS・対話',
-    color: 'pink',
-    enabled: true,
-    domains: ['x.com', 'twitter.com', 'discord.com', 'slack.com', 'reddit.com', 'instagram.com'],
-    titleKeywords: ['X (Twitter)', 'Discord', 'Slack', 'Reddit']
-  },
-  {
-    id: 'cat_shopping',
-    name: '🛒 ショッピング',
-    color: 'yellow',
-    enabled: true,
-    domains: ['amazon.co.jp', 'amazon.com', 'rakuten.co.jp', 'mercari.com', 'shopping.yahoo.co.jp'],
-    titleKeywords: ['Amazon', '楽天市場', 'メルカリ']
-  },
-  {
-    id: 'cat_news',
-    name: '📰 ニュース・情報',
-    color: 'orange',
-    enabled: true,
-    domains: ['news.yahoo.co.jp', 'nikkei.com', 'hatena.ne.jp', 'asahi.com', 'itmedia.co.jp', 'bbc.com'],
-    titleKeywords: ['Yahoo!ニュース', '日経電子版', 'ITmedia']
-  }
-];
+import { DEFAULT_CATEGORIES, DEFAULT_SETTINGS } from '../utils/default_rules.js';
+import { normalizeCategories, normalizeRuleSettings } from '../utils/category_rules.js';
+
+const FALLBACK_CATEGORIES = normalizeCategories(DEFAULT_CATEGORIES);
 
 const GROUP_COLORS = [
   { value: 'grey', label: 'グレー', hex: '#5f6368' },
@@ -69,14 +15,10 @@ const GROUP_COLORS = [
   { value: 'orange', label: 'オレンジ', hex: '#fa903e' }
 ];
 
-const PREVIEW_STORAGE_KEY = 'smart-tab-grouper-options-preview';
+const PREVIEW_STORAGE_KEY = 'smart-tab-grouper-options-preview-v2';
 const PREVIEW_CONTENT_ACCESS_KEY = 'smart-tab-grouper-options-preview-content-access';
 const MANAGED_GROUPS_STORAGE_KEY = 'smartTabGrouperManagedGroupsV1';
 const UNGROUPED_SELECTION_ID = 'ungrouped';
-const DEFAULT_ORGANIZE_SETTINGS = Object.freeze({
-  contentClassificationEnabled: false,
-  groupUnmatchedAsOthers: false
-});
 const previewMode = new URLSearchParams(window.location.search).get('preview') === '1';
 const storage = createStorageAdapter();
 const organizer = createOrganizerAdapter();
@@ -1685,7 +1627,7 @@ function getSavedSettingsSnapshot() {
 
 function getStoredSettingsSnapshot(stored) {
   return {
-    categories: Array.isArray(stored?.categories) ? stored.categories : FALLBACK_CATEGORIES,
+    categories: normalizeCategories(stored?.categories, FALLBACK_CATEGORIES),
     uiTheme: SmartTabTheme.normalizeConfig(stored?.uiTheme),
     settings: normalizeOrganizeSettings(stored?.settings)
   };
@@ -2008,7 +1950,7 @@ function createStorageAdapter() {
           SmartTabSettingsStorage.loadCategories(chrome.storage.sync, FALLBACK_CATEGORIES)
         ]);
         return {
-          categories: clone(storedCategories),
+          categories: normalizeCategories(storedCategories, FALLBACK_CATEGORIES),
           uiTheme: SmartTabTheme.normalizeConfig(data.uiTheme),
           settings: normalizeOrganizeSettings(data.settings)
         };
@@ -2029,9 +1971,10 @@ function createStorageAdapter() {
             expected
           )
         ) return false;
+        const categoriesToSave = normalizeCategories(value.categories, FALLBACK_CATEGORIES);
         const prepared = await SmartTabSettingsStorage.prepareCategoryWrite(
           chrome.storage.sync,
-          clone(value.categories)
+          categoriesToSave
         );
         if (expected) {
           const [latest, latestCategories] = await Promise.all([
@@ -2133,13 +2076,13 @@ function createStorageAdapter() {
         const parsed = saved ? JSON.parse(saved) : null;
         if (Array.isArray(parsed)) {
           return {
-            categories: clone(parsed),
+            categories: normalizeCategories(parsed, FALLBACK_CATEGORIES),
             uiTheme: clone(SmartTabTheme.DEFAULT_CONFIG),
             settings: normalizeOrganizeSettings()
           };
         }
         return {
-          categories: clone(Array.isArray(parsed?.categories) ? parsed.categories : FALLBACK_CATEGORIES),
+          categories: normalizeCategories(parsed?.categories, FALLBACK_CATEGORIES),
           uiTheme: SmartTabTheme.normalizeConfig(parsed?.uiTheme),
           settings: normalizeOrganizeSettings(parsed?.settings)
         };
@@ -2490,13 +2433,7 @@ function waitForPreview(milliseconds) {
 }
 
 function normalizeOrganizeSettings(value = {}) {
-  return {
-    ...value,
-    ...DEFAULT_ORGANIZE_SETTINGS,
-    groupByDomainAsFallback: false,
-    contentClassificationEnabled: value?.contentClassificationEnabled === true,
-    groupUnmatchedAsOthers: value?.groupUnmatchedAsOthers === true
-  };
+  return normalizeRuleSettings(value, DEFAULT_SETTINGS);
 }
 
 function clone(value) {

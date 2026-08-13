@@ -3,6 +3,7 @@ import {
   saveManagedGroupRecords
 } from './safe_organizer.js';
 import { getUndoRecord, updateUndoRecord } from './undo_manager.js';
+import { normalizeCategories } from './category_rules.js';
 import './settings_storage.js';
 
 const settingsStorage = globalThis.SmartTabSettingsStorage;
@@ -34,7 +35,10 @@ export async function correctTabClassification({
   const hostname = getHttpHostname(currentTab.url || currentTab.pendingUrl || '');
   if (!hostname) throw new Error('このページはドメインルールへ登録できません。');
 
-  const storedCategories = await settingsStorage.loadCategories(chromeApi.storage.sync, []);
+  const storedCategories = normalizeCategories(
+    await settingsStorage.loadCategories(chromeApi.storage.sync, []),
+    []
+  );
   if (!sameCategories(storedCategories, categories)) {
     throw new Error('分類設定が更新されています。結果を開き直してから修正してください。');
   }
@@ -69,10 +73,11 @@ export async function correctTabClassification({
     chromeApi.storage.sync,
     categoriesNext
   );
-  const [latestRoot, latestCategories] = await Promise.all([
+  const [latestRoot, latestCategoriesRaw] = await Promise.all([
     chromeApi.storage.sync.get([settingsStorage.MANIFEST_KEY]),
     settingsStorage.loadCategories(chromeApi.storage.sync, [])
   ]);
+  const latestCategories = normalizeCategories(latestCategoriesRaw, []);
   const latestGeneration = latestRoot[settingsStorage.MANIFEST_KEY]?.generation || null;
   if (
     latestGeneration !== preparedCategoryWrite.previousGeneration
@@ -152,6 +157,7 @@ export async function correctTabClassification({
   } catch (error) {
     const currentCategories = await settingsStorage
       .loadCategories(chromeApi.storage.sync, null)
+      .then((value) => normalizeCategories(value, []))
       .catch(() => null);
     if (sameCategories(currentCategories, categoriesNext)) {
       await settingsStorage.saveCategories(chromeApi.storage.sync, categoriesBefore).catch(() => {});
@@ -177,9 +183,9 @@ export async function correctTabClassification({
 }
 
 function sameCategories(left, right) {
-  return Array.isArray(left)
-    && Array.isArray(right)
-    && JSON.stringify(left) === JSON.stringify(right);
+  if (!Array.isArray(left) || !Array.isArray(right)) return false;
+  return JSON.stringify(normalizeCategories(left, []))
+    === JSON.stringify(normalizeCategories(right, []));
 }
 
 function updateCorrectionRecord(record, {
