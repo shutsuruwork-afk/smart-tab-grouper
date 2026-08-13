@@ -45,7 +45,7 @@ Version 1.0.0
 - **Manifest**: Chrome Extension Manifest V3
 - **Language**: Vanilla JavaScript
 - **UI & Styling**: HTML5 / CSS custom properties / system light-dark themes
-- **Permissions**: `tabs`, `tabGroups`, `storage`, `unlimitedStorage`
+- **Permissions**: `tabs`, `tabGroups`, `storage`
 
 ---
 

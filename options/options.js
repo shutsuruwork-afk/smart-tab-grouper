@@ -975,7 +975,10 @@ function setupOrganizerChangeListeners() {
   chrome.tabGroups.onMoved?.addListener(schedule);
   chrome.storage.onChanged?.addListener((changes, areaName) => {
     if (
-      (areaName === 'sync' && (changes.categories || changes.settings))
+      (areaName === 'sync' && (
+        SmartTabSettingsStorage.isCategoryStorageChange(changes)
+        || changes.settings
+      ))
       || (areaName === 'local' && changes[MANAGED_GROUPS_STORAGE_KEY])
       || areaName === 'session'
     ) schedule();
@@ -1771,11 +1774,17 @@ async function saveChanges() {
     );
     return true;
   } catch (error) {
+    console.error('Settings save failed:', error);
     contentClassificationAccessChecking = false;
     dirty = true;
     updateDirtyState();
     if (selectedView === 'behavior') renderBehaviorSettings();
-    showToast('保存できませんでした');
+    const isQuotaError = /quota|max_write|bytes/i.test(String(error?.message || error));
+    showToast(
+      isQuotaError
+        ? 'Chromeの同期容量を超えたため保存できませんでした。登録内容を減らして再試行してください'
+        : '保存できませんでした。変更はこの画面に残っています'
+    );
     return false;
   } finally {
     settingsSaveInFlight = false;
@@ -1924,34 +1933,72 @@ function createStorageAdapter() {
   if (canUseExtensionStorage) {
     return {
       async load() {
-        const data = await chrome.storage.sync.get(['categories', 'uiTheme', 'settings']);
+        const [data, storedCategories] = await Promise.all([
+          chrome.storage.sync.get(['uiTheme', 'settings']),
+          SmartTabSettingsStorage.loadCategories(chrome.storage.sync, FALLBACK_CATEGORIES)
+        ]);
         return {
-          categories: clone(Array.isArray(data.categories) ? data.categories : FALLBACK_CATEGORIES),
+          categories: clone(storedCategories),
           uiTheme: SmartTabTheme.normalizeConfig(data.uiTheme),
           settings: normalizeOrganizeSettings(data.settings)
         };
       },
       async save(value, expected) {
-        const current = await chrome.storage.sync.get(['categories', 'uiTheme', 'settings']);
+        const [current, currentCategories] = await Promise.all([
+          chrome.storage.sync.get(['uiTheme', 'settings']),
+          SmartTabSettingsStorage.loadCategories(chrome.storage.sync, FALLBACK_CATEGORIES)
+        ]);
         if (
           expected
           && !SmartTabSettingsConcurrency.deepEqual(
             getStoredSettingsSnapshot({
-              categories: Array.isArray(current.categories) ? current.categories : FALLBACK_CATEGORIES,
+              categories: currentCategories,
               uiTheme: current.uiTheme,
               settings: current.settings
             }),
             expected
           )
         ) return false;
-        await chrome.storage.sync.set({
-          categories: clone(value.categories),
+        const prepared = await SmartTabSettingsStorage.prepareCategoryWrite(
+          chrome.storage.sync,
+          clone(value.categories)
+        );
+        if (expected) {
+          const [latest, latestCategories] = await Promise.all([
+            chrome.storage.sync.get([
+              'uiTheme',
+              'settings',
+              SmartTabSettingsStorage.MANIFEST_KEY
+            ]),
+            SmartTabSettingsStorage.loadCategories(chrome.storage.sync, FALLBACK_CATEGORIES)
+          ]);
+          const latestGeneration = latest[SmartTabSettingsStorage.MANIFEST_KEY]?.generation || null;
+          if (
+            latestGeneration !== prepared.previousGeneration
+            || !SmartTabSettingsConcurrency.deepEqual(
+              getStoredSettingsSnapshot({
+                categories: latestCategories,
+                uiTheme: latest.uiTheme,
+                settings: latest.settings
+              }),
+              expected
+            )
+          ) return false;
+        }
+        await SmartTabSettingsStorage.commitCategoryWrite(chrome.storage.sync, prepared, {
           uiTheme: SmartTabTheme.normalizeConfig(value.uiTheme),
           settings: normalizeOrganizeSettings(value.settings)
         });
-        const confirmed = await chrome.storage.sync.get(['categories', 'uiTheme', 'settings']);
+        const [confirmed, confirmedCategories] = await Promise.all([
+          chrome.storage.sync.get(['uiTheme', 'settings']),
+          SmartTabSettingsStorage.loadCategories(chrome.storage.sync, FALLBACK_CATEGORIES)
+        ]);
         return SmartTabSettingsConcurrency.deepEqual(
-          getStoredSettingsSnapshot(confirmed),
+          getStoredSettingsSnapshot({
+            categories: confirmedCategories,
+            uiTheme: confirmed.uiTheme,
+            settings: confirmed.settings
+          }),
           getStoredSettingsSnapshot(value)
         );
       },
@@ -1959,7 +2006,11 @@ function createStorageAdapter() {
         const handleChange = (changes, areaName) => {
           if (
             areaName === 'sync'
-            && (changes.categories || changes.uiTheme || changes.settings)
+            && (
+              SmartTabSettingsStorage.isCategoryStorageChange(changes)
+              || changes.uiTheme
+              || changes.settings
+            )
           ) listener();
         };
         chrome.storage.onChanged.addListener(handleChange);

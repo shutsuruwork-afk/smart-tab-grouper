@@ -1,4 +1,5 @@
 import { DEFAULT_CATEGORIES, DEFAULT_SETTINGS } from './utils/default_rules.js';
+import './utils/settings_storage.js';
 import { classifyTab } from './utils/classifier.js';
 import {
   createContentAssistedClassifier,
@@ -41,6 +42,7 @@ import {
 
 let organizeInFlight = false;
 const OPTIONS_PAGE_URL = chrome.runtime.getURL('options/options.html');
+const settingsStorage = globalThis.SmartTabSettingsStorage;
 
 function reconcileDraftContentAccess() {
   return reconcileContentAccessDrafts(chrome, OPTIONS_PAGE_URL)
@@ -71,12 +73,23 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 // Initialize extension storage on install
 chrome.runtime.onInstalled.addListener(async () => {
-  const data = await chrome.storage.sync.get(['categories', 'settings']);
-  if (!data.categories) {
-    await chrome.storage.sync.set({ categories: DEFAULT_CATEGORIES });
-  }
+  const [data, storedCategories] = await Promise.all([
+    chrome.storage.sync.get(['settings', settingsStorage.MANIFEST_KEY]),
+    settingsStorage.loadCategories(chrome.storage.sync, null)
+  ]);
   const settings = normalizeSettings(data.settings);
-  if (JSON.stringify(settings) !== JSON.stringify(data.settings || {})) {
+  const categories = Array.isArray(storedCategories) ? storedCategories : DEFAULT_CATEGORIES;
+  const categoriesNeedWrite = !data[settingsStorage.MANIFEST_KEY] || !Array.isArray(storedCategories);
+  const settingsNeedWrite = JSON.stringify(settings) !== JSON.stringify(data.settings || {});
+
+  if (categoriesNeedWrite) {
+    try {
+      await settingsStorage.saveCategories(chrome.storage.sync, categories, { settings });
+    } catch (error) {
+      console.warn('Category settings migration failed:', error);
+      if (settingsNeedWrite) await chrome.storage.sync.set({ settings });
+    }
+  } else if (settingsNeedWrite) {
     await chrome.storage.sync.set({ settings });
   }
   console.log("Smart Tab Grouper 1.0.0 initialized.");
@@ -94,9 +107,12 @@ function normalizeSettings(value = {}) {
 
 // Helper: Get config
 async function getStorageConfig() {
-  const data = await chrome.storage.sync.get(['categories', 'settings']);
+  const [data, categories] = await Promise.all([
+    chrome.storage.sync.get(['settings']),
+    settingsStorage.loadCategories(chrome.storage.sync, DEFAULT_CATEGORIES)
+  ]);
   return {
-    categories: data.categories || DEFAULT_CATEGORIES,
+    categories,
     settings: normalizeSettings(data.settings)
   };
 }
@@ -653,9 +669,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.action === "RESET_TO_DEFAULT") {
-    chrome.storage.sync.set({ categories: DEFAULT_CATEGORIES, settings: DEFAULT_SETTINGS }, () => {
-      sendResponse({ success: true });
-    });
+    settingsStorage.saveCategories(chrome.storage.sync, DEFAULT_CATEGORIES, {
+      settings: DEFAULT_SETTINGS
+    })
+      .then(() => sendResponse({ success: true }))
+      .catch((error) => sendResponse({
+        success: false,
+        message: error?.message || '設定を初期化できませんでした。'
+      }));
     return true;
   }
 });

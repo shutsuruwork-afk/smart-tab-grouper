@@ -3,6 +3,9 @@ import {
   saveManagedGroupRecords
 } from './safe_organizer.js';
 import { getUndoRecord, updateUndoRecord } from './undo_manager.js';
+import './settings_storage.js';
+
+const settingsStorage = globalThis.SmartTabSettingsStorage;
 
 export async function correctTabClassification({
   chromeApi,
@@ -31,6 +34,11 @@ export async function correctTabClassification({
   const hostname = getHttpHostname(currentTab.url || currentTab.pendingUrl || '');
   if (!hostname) throw new Error('このページはドメインルールへ登録できません。');
 
+  const storedCategories = await settingsStorage.loadCategories(chromeApi.storage.sync, []);
+  if (!sameCategories(storedCategories, categories)) {
+    throw new Error('分類設定が更新されています。結果を開き直してから修正してください。');
+  }
+
   const sourceGroup = undoRecord.summary?.groups?.find((group) =>
     group.tabs?.some((tab) => tab.tabId === tabId)
   );
@@ -57,10 +65,26 @@ export async function correctTabClassification({
       && group.color === record.color;
   });
 
+  const preparedCategoryWrite = await settingsStorage.prepareCategoryWrite(
+    chromeApi.storage.sync,
+    categoriesNext
+  );
+  const [latestRoot, latestCategories] = await Promise.all([
+    chromeApi.storage.sync.get([settingsStorage.MANIFEST_KEY]),
+    settingsStorage.loadCategories(chromeApi.storage.sync, [])
+  ]);
+  const latestGeneration = latestRoot[settingsStorage.MANIFEST_KEY]?.generation || null;
+  if (
+    latestGeneration !== preparedCategoryWrite.previousGeneration
+    || !sameCategories(latestCategories, categoriesBefore)
+  ) {
+    throw new Error('分類設定が更新されています。結果を開き直してから修正してください。');
+  }
+
   let targetGroupId = targetRecord?.groupId ?? null;
   let createdGroupId = null;
   try {
-    await chromeApi.storage.sync.set({ categories: categoriesNext });
+    await settingsStorage.commitCategoryWrite(chromeApi.storage.sync, preparedCategoryWrite);
 
     if (targetGroupId === null) {
       targetGroupId = await chromeApi.tabs.group({
@@ -126,7 +150,12 @@ export async function correctTabClassification({
       message: `${hostname} を「${targetCategory.name}」へ登録しました。`
     };
   } catch (error) {
-    await chromeApi.storage.sync.set({ categories: categoriesBefore }).catch(() => {});
+    const currentCategories = await settingsStorage
+      .loadCategories(chromeApi.storage.sync, null)
+      .catch(() => null);
+    if (sameCategories(currentCategories, categoriesNext)) {
+      await settingsStorage.saveCategories(chromeApi.storage.sync, categoriesBefore).catch(() => {});
+    }
     const restoredGroupId = await restorePreviousGroup(chromeApi, {
       tabId,
       windowId,
@@ -145,6 +174,12 @@ export async function correctTabClassification({
     await saveManagedGroupRecords(chromeApi, managedToRestore).catch(() => {});
     throw error;
   }
+}
+
+function sameCategories(left, right) {
+  return Array.isArray(left)
+    && Array.isArray(right)
+    && JSON.stringify(left) === JSON.stringify(right);
 }
 
 function updateCorrectionRecord(record, {

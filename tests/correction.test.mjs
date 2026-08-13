@@ -5,6 +5,8 @@ import { correctTabClassification } from '../utils/correction.js';
 import { MANAGED_GROUPS_STORAGE_KEY } from '../utils/safe_organizer.js';
 import { undoLastOperation, UNDO_RECORDS_STORAGE_KEY } from '../utils/undo_manager.js';
 
+const settingsStorage = globalThis.SmartTabSettingsStorage;
+
 test('完了画面の修正で現在のタブ移動と最長一致ドメイン登録を一度に行う', async () => {
   const categories = [
     {
@@ -30,8 +32,9 @@ test('完了画面の修正で現在のタブ移動と最長一致ドメイン�
 
   assert.equal(result.success, true);
   assert.equal(chromeApi.state.tabs[0].groupId, 202);
-  assert.deepEqual(chromeApi.state.sync.categories[0].domains, ['google.com']);
-  assert.deepEqual(chromeApi.state.sync.categories[1].domains, ['mail.google.com']);
+  const savedCategories = await settingsStorage.loadCategories(chromeApi.storage.sync, []);
+  assert.deepEqual(savedCategories[0].domains, ['google.com']);
+  assert.deepEqual(savedCategories[1].domains, ['mail.google.com']);
   assert.equal(result.undo.summary.groups.find((group) => group.categoryId === 'cat_work').count, 1);
 
   const undone = await undoLastOperation(chromeApi, 7, () => 2_500);
@@ -60,6 +63,30 @@ test('完了後に手動で移動されたタブは修正対象にしない', as
     /後から変更/
   );
   assert.deepEqual(chromeApi.state.sync.categories, categories);
+});
+
+test('完了後に分類設定が更新された場合は古い結果から上書きしない', async () => {
+  const categories = [
+    { id: 'cat_search', name: '検索', color: 'cyan', enabled: true, domains: ['google.com'] },
+    { id: 'cat_work', name: '仕事', color: 'blue', enabled: true, domains: [] }
+  ];
+  const chromeApi = createChromeFake(categories);
+  const updated = structuredClone(categories);
+  updated[1].domains.push('example.com');
+  chromeApi.state.sync.categories = updated;
+
+  await assert.rejects(correctTabClassification({
+    chromeApi,
+    windowId: 7,
+    operationId: 'op-correct',
+    tabId: 1,
+    targetCategoryId: 'cat_work',
+    categories,
+    now: () => 2_000
+  }), /分類設定が更新/);
+
+  assert.deepEqual(await settingsStorage.loadCategories(chromeApi.storage.sync, []), updated);
+  assert.equal(chromeApi.state.tabs[0].groupId, 101);
 });
 
 test('修正保存に失敗して元グループを再作成した場合は所有権IDも更新する', async () => {
@@ -105,6 +132,33 @@ test('修正保存に失敗して元グループを再作成した場合は所�
     .find((record) => record.categoryId === 'cat_search');
   assert.equal(restored.groupId, 303);
   assert.equal(chromeApi.state.groups.find((group) => group.id === 303).title, '検索');
+  assert.deepEqual(await settingsStorage.loadCategories(chromeApi.storage.sync, []), categories);
+});
+
+test('修正のロールバック中も別画面の分類設定を上書きしない', async () => {
+  const categories = [
+    { id: 'cat_search', name: '検索', color: 'cyan', enabled: true, domains: ['google.com'] },
+    { id: 'cat_work', name: '仕事', color: 'blue', enabled: true, domains: [] }
+  ];
+  const concurrent = structuredClone(categories);
+  concurrent[0].domains.push('maps.google.com');
+  const chromeApi = createChromeFake(categories);
+  chromeApi.storage.session.set = async () => {
+    await settingsStorage.saveCategories(chromeApi.storage.sync, concurrent);
+    throw new Error('session write failed');
+  };
+
+  await assert.rejects(correctTabClassification({
+    chromeApi,
+    windowId: 7,
+    operationId: 'op-correct',
+    tabId: 1,
+    targetCategoryId: 'cat_work',
+    categories,
+    now: () => 2_000
+  }), /session write failed/);
+
+  assert.deepEqual(await settingsStorage.loadCategories(chromeApi.storage.sync, []), concurrent);
 });
 
 function createChromeFake(categories) {
