@@ -184,6 +184,8 @@ async function initialize() {
   saveButton.addEventListener('click', saveChanges);
   discardButton.addEventListener('click', discardChanges);
   refreshGroupsButton.addEventListener('click', () => loadOrganizerWorkspace({ announce: true }));
+  bindVerticalListNavigation(currentGroupList, '.current-group-item');
+  bindVerticalListNavigation(categoryList, '.category-item');
   organizeWindowButton.addEventListener('click', () => openOrganizeDialog());
   editGroupButton.addEventListener('click', openGroupEditDialog);
   reorganizeGroupButton.addEventListener('click', openGroupReorganizationDialog);
@@ -506,6 +508,7 @@ function renderCurrentGroupButton(group) {
   button.type = 'button';
   button.className = 'current-group-item';
   button.dataset.groupId = String(group.id);
+  button.tabIndex = group.id === selectedCurrentGroupId ? 0 : -1;
   button.setAttribute('aria-current', String(group.id === selectedCurrentGroupId));
   button.style.setProperty('--group-color', color.hex);
 
@@ -1276,6 +1279,7 @@ function renderCategoryList() {
     button.className = 'category-item';
     button.classList.toggle('is-disabled', category.enabled === false);
     button.dataset.categoryId = category.id;
+    button.tabIndex = category.id === selectedCategoryId ? 0 : -1;
     button.setAttribute('aria-current', String(
       selectedView === 'group' && category.id === selectedCategoryId
     ));
@@ -1340,7 +1344,30 @@ function restoreRenderedListFocus(
     previousKey,
     fallbackKey
   );
-  items.find((item) => item.dataset[dataKey] === key)?.focus({ preventScroll: true });
+  const target = items.find((item) => item.dataset[dataKey] === key);
+  if (!target) return;
+  for (const item of items) item.tabIndex = item === target ? 0 : -1;
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+function bindVerticalListNavigation(container, selector) {
+  container.addEventListener('keydown', (event) => {
+    const current = event.target instanceof Element ? event.target.closest(selector) : null;
+    if (!current || !container.contains(current)) return;
+    const items = [...container.querySelectorAll(selector)];
+    const nextIndex = SmartTabMenuNavigation.getVerticalNextIndex(
+      event.key,
+      items.indexOf(current),
+      items.length
+    );
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const target = items[nextIndex];
+    for (const item of items) item.tabIndex = item === target ? 0 : -1;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
 }
 
 function renderEditor() {

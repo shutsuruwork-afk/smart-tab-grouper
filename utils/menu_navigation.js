@@ -16,5 +16,10 @@
     return null;
   }
 
-  root.SmartTabMenuNavigation = Object.freeze({ getNextIndex });
+  function getVerticalNextIndex(key, currentIndex, itemCount) {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(key)) return null;
+    return getNextIndex(key, currentIndex, itemCount);
+  }
+
+  root.SmartTabMenuNavigation = Object.freeze({ getNextIndex, getVerticalNextIndex });
 })(globalThis);
