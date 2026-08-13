@@ -33,6 +33,8 @@
 
 `起動状態` を `処理中` にすると、遅い状態応答を一つずつ読みながら、処理中表示から完了画面へ自動で移る。Service Worker起動直後や中断復旧時の表示確認に使う。
 
+設定画面の一時的な読込み失敗は、`options/options.html?preview=1&loadFailure=refresh#organizer` を開いて `更新` を押すと再現できる。一覧と選択を残したまま操作だけを止め、自動再確認後に復帰することを確認する。
+
 ## Chrome拡張としての実機テスト
 
 1. Chromeで `chrome://extensions/` を開く

@@ -115,9 +115,11 @@ let activeWorkspace = window.location.hash === '#organizer' ? 'organizer' : 'set
 let organizerState = null;
 let selectedCurrentGroupId = null;
 let organizerLoading = false;
+let organizerStateStale = false;
 let organizerRefreshTimer = null;
 let organizerRefreshPending = false;
 let organizerUndoExpiryTimer = null;
+const organizerRefreshRetry = SmartTabRetryBackoff.create();
 let behaviorActionRunning = false;
 let organizerDialogMode = 'window';
 let pendingWindowConfirmationToken = null;
@@ -335,6 +337,7 @@ function handleGlobalKeydown(event) {
     SmartTabKeyboardShortcuts.matchesUndoShortcut(event)
     && activeWorkspace === 'organizer'
     && organizerState?.undo?.available
+    && !organizerStateStale
     && !isEditableElement(event.target)
   ) {
     event.preventDefault();
@@ -344,7 +347,15 @@ function handleGlobalKeydown(event) {
 
 async function loadOrganizerWorkspace({ announce = false } = {}) {
   if (organizerLoading) return false;
+  if (announce) organizerRefreshRetry.reset();
+  const focusedControl = [
+    refreshGroupsButton,
+    organizeWindowButton,
+    editGroupButton,
+    reorganizeGroupButton
+  ].includes(document.activeElement) ? document.activeElement : null;
   organizerLoading = true;
+  organizerWorkspace.setAttribute('aria-busy', 'true');
   organizerRefreshPending = false;
   clearTimeout(organizerRefreshTimer);
   organizerRefreshTimer = null;
@@ -356,7 +367,10 @@ async function loadOrganizerWorkspace({ announce = false } = {}) {
 
   try {
     const previousSelection = selectedCurrentGroupId;
-    organizerState = await organizer.load();
+    const wasStale = organizerStateStale;
+    organizerState = await organizer.load({ reason: announce ? 'manual' : 'automatic' });
+    organizerStateStale = false;
+    organizerRefreshRetry.reset();
     const ungrouped = getUngroupedSelection();
     const groupIds = new Set(organizerState.groups.map((group) => group.id));
     if (ungrouped) groupIds.add(UNGROUPED_SELECTION_ID);
@@ -378,19 +392,52 @@ async function loadOrganizerWorkspace({ announce = false } = {}) {
       );
     } else if (announce) {
       setOrganizerStatus('現在の状態に更新しました。');
+    } else if (wasStale) {
+      setOrganizerStatus('現在の状態へ復帰しました。');
     }
     return true;
   } catch (error) {
-    organizerState = { groups: [], tabs: [], preview: null, undo: null };
-    selectedCurrentGroupId = null;
-    renderOrganizerWorkspace();
-    setOrganizerStatus(error?.message || 'タブグループを確認できませんでした。', true);
+    const hasLastKnownState = Boolean(
+      organizerState
+      && Array.isArray(organizerState.groups)
+      && Array.isArray(organizerState.tabs)
+    );
+    organizerStateStale = true;
+    if (!hasLastKnownState) {
+      organizerState = { groups: [], tabs: [], preview: null, undo: null };
+      selectedCurrentGroupId = null;
+      renderOrganizerWorkspace();
+    }
+    const retryDelay = organizerRefreshRetry.nextDelay();
+    const rawFailureMessage = error?.message || 'タブグループを確認できませんでした。';
+    const failureMessage = /[。.!?！？]$/.test(rawFailureMessage)
+      ? rawFailureMessage
+      : `${rawFailureMessage}。`;
+    const preservedMessage = hasLastKnownState ? '表示は保持しています。' : '';
+    setOrganizerStatus(
+      retryDelay === null
+        ? `${failureMessage}${preservedMessage}「更新」で再確認してください。`
+        : `${failureMessage}${preservedMessage}自動で再確認します。`,
+      true
+    );
+    if (retryDelay !== null) scheduleOrganizerRefresh(retryDelay);
     return false;
   } finally {
     organizerLoading = false;
+    organizerWorkspace.removeAttribute('aria-busy');
     updateOrganizerControls();
+    restoreOrganizerControlFocus(focusedControl);
     flushOrganizerRefresh();
   }
+}
+
+function restoreOrganizerControlFocus(previousControl) {
+  if (!previousControl) return;
+  const focusWasLost = document.activeElement === document.body
+    || document.activeElement === document.documentElement;
+  if (!focusWasLost) return;
+  const target = previousControl.disabled ? refreshGroupsButton : previousControl;
+  if (!target.disabled) target.focus({ preventScroll: true });
 }
 
 function renderOrganizerWorkspace() {
@@ -563,7 +610,8 @@ async function openOrganizeDialog({ refresh = true } = {}) {
     setOrganizerStatus('分類設定を保存するか破棄してから実行してください。', true);
     return;
   }
-  if (refresh) await loadOrganizerWorkspace();
+  if (refresh && !(await loadOrganizerWorkspace())) return;
+  if (!ensureOrganizerStateIsCurrent()) return;
   if (organizerState?.inProgress) return;
   renderWindowOrganizeConfirmation(organizerState?.preview);
   if (typeof organizeDialog.showModal === 'function') organizeDialog.showModal();
@@ -599,6 +647,7 @@ async function openGroupReorganizationDialog() {
     setOrganizerStatus('分類設定を保存するか破棄してから実行してください。', true);
     return;
   }
+  if (!ensureOrganizerStateIsCurrent()) return;
   const group = getSelectedOrganizerGroup();
   if (!group || group.isUngrouped || group.tabIds.length < 2 || organizerLoading) return;
 
@@ -638,6 +687,7 @@ function openGroupEditDialog() {
     setOrganizerStatus('分類設定を保存するか破棄してから編集してください。', true);
     return;
   }
+  if (!ensureOrganizerStateIsCurrent()) return;
   const group = getSelectedOrganizerGroup();
   if (!group || group.isUngrouped || group.shared || organizerLoading) return;
 
@@ -916,6 +966,7 @@ async function undoOrganizerAction() {
   if (
     !organizerState?.undo?.available
     || organizerLoading
+    || organizerStateStale
     || organizeDialog.open
     || groupEditDialog.open
     || !workspaceMenu.hidden
@@ -950,6 +1001,12 @@ function setOrganizerStatus(message, error = false) {
   organizerStatus.classList.toggle('is-error', error);
 }
 
+function ensureOrganizerStateIsCurrent() {
+  if (!organizerStateStale) return true;
+  setOrganizerStatus('最新のタブ状態を確認してから操作できます。再確認をお待ちください。', true);
+  return false;
+}
+
 function getOrganizerProgressMessage(operationType) {
   return {
     undo: '元に戻しています。完了後に自動更新します。',
@@ -962,7 +1019,7 @@ function getOrganizerProgressMessage(operationType) {
 function updateOrganizerControls() {
   const previewCount = Number(organizerState?.preview?.count) || 0;
   const hasPotentialTargets = hasOrganizerPotentialTargets();
-  const blocked = organizerLoading || dirty || organizerState?.inProgress === true;
+  const blocked = organizerLoading || organizerStateStale || dirty || organizerState?.inProgress === true;
   refreshGroupsButton.disabled = organizerLoading;
   organizeWindowButton.disabled = blocked || !hasPotentialTargets;
   const selectedGroup = getSelectedOrganizerGroup();
@@ -981,32 +1038,38 @@ function updateOrganizerControls() {
   reorganizeGroupButton.disabled = blocked || !canReorganizeGroup;
   organizeWindowButton.title = dirty
     ? '分類設定を保存するか破棄してから実行できます'
-    : organizerState?.inProgress
-      ? '別の整理処理を実行しています'
-      : !hasPotentialTargets
-        ? '現在の設定で分類できる未グループタブはありません'
-        : '';
+    : organizerStateStale
+      ? '最新のタブ状態を確認してから実行できます'
+      : organizerState?.inProgress
+        ? '別の整理処理を実行しています'
+        : !hasPotentialTargets
+          ? '現在の設定で分類できる未グループタブはありません'
+          : '';
   confirmOrganizeButton.disabled = organizerDialogMode === 'group' && organizeDialog.open
     ? blocked || !(pendingGroupReorganization?.movedCount > 0)
     : blocked || !hasPotentialTargets;
   reorganizeGroupButton.title = dirty
     ? '分類設定を保存するか破棄してから実行できます'
-    : organizerState?.inProgress
-      ? '別の整理処理を実行しています'
-      : !canReorganizeGroup
-        ? selectedGroup?.shared
-          ? '共有グループは現在の変更対象外です'
-          : '2件以上のタブがあるグループを選んでください'
-        : '';
+    : organizerStateStale
+      ? '最新のタブ状態を確認してから実行できます'
+      : organizerState?.inProgress
+        ? '別の整理処理を実行しています'
+        : !canReorganizeGroup
+          ? selectedGroup?.shared
+            ? '共有グループは現在の変更対象外です'
+            : '2件以上のタブがあるグループを選んでください'
+          : '';
   editGroupButton.title = dirty
     ? '分類設定を保存するか破棄してから編集できます'
-    : organizerState?.inProgress
-      ? '別の整理処理を実行しています'
-      : selectedGroup?.shared
-        ? '共有グループは現在の変更対象外です'
-        : !canEditGroup
-          ? '編集するグループを選んでください'
-          : '';
+    : organizerStateStale
+      ? '最新のタブ状態を確認してから編集できます'
+      : organizerState?.inProgress
+        ? '別の整理処理を実行しています'
+        : selectedGroup?.shared
+          ? '共有グループは現在の変更対象外です'
+          : !canEditGroup
+            ? '編集するグループを選んでください'
+            : '';
 }
 
 function getSelectedOrganizerGroup() {
@@ -1319,6 +1382,7 @@ async function organizeFromBehaviorSettings() {
       setOrganizerStatus('別の整理処理を実行しています。完了後に自動更新します。');
       return;
     }
+    if (!ensureOrganizerStateIsCurrent()) return;
     if (!hasOrganizerPotentialTargets()) {
       setOrganizerStatus('現在の設定で分類できる未グループタブはありません。');
       organizeWindowButton.focus({ preventScroll: true });
@@ -2346,10 +2410,12 @@ function createOrganizerAdapter() {
   let previewUndoOperationId = null;
   let previewUndoExpiresAt = null;
   let previewOperationCounter = 0;
+  let previewManualLoadFailed = false;
   const previewLostResponses = new Set();
   const previewParams = new URLSearchParams(window.location.search);
   const previewLoss = previewParams.get('loss');
   const previewStale = previewParams.get('stale');
+  const previewLoadFailure = previewParams.get('loadFailure');
   const previewUndoMaximum = 30 * 60 * 1000;
   const previewUndoTtl = SmartTabActionExpiry.clampDuration(
     previewParams.get('undoTtl'),
@@ -2377,7 +2443,15 @@ function createOrganizerAdapter() {
   }
 
   return {
-    async load() {
+    async load({ reason } = {}) {
+      if (
+        previewLoadFailure === 'refresh'
+        && reason === 'manual'
+        && !previewManualLoadFailed
+      ) {
+        previewManualLoadFailed = true;
+        throw new Error('一時的にタブ状態を確認できませんでした。');
+      }
       expirePreviewUndoIfNeeded();
       const tabs = previewTabs.map((tab) => {
         if (previewOrganized && [106, 107].includes(tab.id)) return { ...tab, groupId: 14 };
