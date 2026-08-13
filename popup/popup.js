@@ -5,6 +5,7 @@ let undoAvailable = false;
 let currentUndoOperationId = null;
 let availableCategories = [];
 let pollTimer = null;
+let openCorrectionMenu = null;
 
 const themeReady = initializeTheme();
 
@@ -41,6 +42,7 @@ function bindStaticActions() {
   for (const button of document.querySelectorAll('.settings-link')) {
     button.addEventListener('click', openSettings);
   }
+  document.addEventListener('click', closeCorrectionMenuFromOutside);
   document.addEventListener('keydown', handleUndoShortcut);
 }
 
@@ -137,6 +139,7 @@ function renderCompletion(undoState, fallbackMessage = '') {
 
 function renderCompletionGroups(groups) {
   const container = document.getElementById('completionGroups');
+  openCorrectionMenu = null;
   container.replaceChildren();
   container.hidden = groups.length === 0;
   for (const group of groups) {
@@ -180,37 +183,106 @@ function renderCompletionGroups(groups) {
         const host = document.createElement('small');
         host.textContent = getHostname(tab.url);
         tabCopy.append(title, host);
+        tabRow.append(tabCopy);
 
-        const correct = document.createElement('button');
-        correct.type = 'button';
-        correct.className = 'correction-trigger';
-        correct.textContent = '修正';
-        correct.setAttribute('aria-label', `${tab.title || 'このタブ'}の分類を修正`);
-        correct.setAttribute('aria-expanded', 'false');
+        const alternatives = availableCategories.filter((item) => item.id !== group.categoryId);
+        if (alternatives.length > 0) {
+          const correct = document.createElement('button');
+          correct.type = 'button';
+          correct.className = 'correction-trigger';
+          correct.textContent = '修正';
+          correct.setAttribute('aria-label', `${tab.title || 'このタブ'}の分類を修正`);
+          correct.setAttribute('aria-expanded', 'false');
+          correct.setAttribute('aria-haspopup', 'menu');
 
-        const choices = document.createElement('div');
-        choices.className = 'correction-choices';
-        choices.hidden = true;
-        for (const category of availableCategories.filter((item) => item.id !== group.categoryId)) {
-          const choice = document.createElement('button');
-          choice.type = 'button';
-          choice.className = 'correction-choice';
-          choice.textContent = category.name;
-          choice.addEventListener('click', () => applyCorrection(tab.tabId, category.id));
-          choices.append(choice);
+          const choices = document.createElement('div');
+          choices.id = `correction-menu-${tab.tabId}`;
+          choices.className = 'correction-choices';
+          choices.hidden = true;
+          choices.setAttribute('role', 'menu');
+          choices.setAttribute('aria-label', `${tab.title || 'このタブ'}の移動先`);
+          correct.setAttribute('aria-controls', choices.id);
+          for (const category of alternatives) {
+            const choice = document.createElement('button');
+            choice.type = 'button';
+            choice.className = 'correction-choice';
+            choice.setAttribute('role', 'menuitem');
+            choice.tabIndex = -1;
+            choice.textContent = category.name;
+            choice.addEventListener('click', () => applyCorrection(tab.tabId, category.id));
+            choices.append(choice);
+          }
+          correct.addEventListener('click', () => toggleCorrectionMenu(correct, choices));
+          choices.addEventListener('keydown', (event) => handleCorrectionMenuKeydown(
+            event,
+            correct,
+            choices
+          ));
+          choices.addEventListener('focusout', (event) => {
+            const next = event.relatedTarget;
+            if (next !== correct && !(next instanceof Node && choices.contains(next))) {
+              closeOpenCorrectionMenu();
+            }
+          });
+          tabRow.append(correct, choices);
         }
-        correct.addEventListener('click', () => {
-          choices.hidden = !choices.hidden;
-          correct.setAttribute('aria-expanded', String(!choices.hidden));
-        });
-
-        tabRow.append(tabCopy, correct, choices);
         tabs.append(tabRow);
       }
       block.append(tabs);
     }
     container.append(block);
   }
+}
+
+function toggleCorrectionMenu(trigger, menu) {
+  const willOpen = menu.hidden;
+  closeOpenCorrectionMenu();
+  if (!willOpen) return;
+
+  menu.hidden = false;
+  trigger.setAttribute('aria-expanded', 'true');
+  openCorrectionMenu = { trigger, menu };
+  const firstChoice = menu.querySelector('.correction-choice');
+  if (firstChoice) {
+    firstChoice.tabIndex = 0;
+    firstChoice.focus({ preventScroll: true });
+  }
+}
+
+function closeOpenCorrectionMenu({ restoreFocus = false } = {}) {
+  if (!openCorrectionMenu) return;
+  const { trigger, menu } = openCorrectionMenu;
+  menu.hidden = true;
+  for (const choice of menu.querySelectorAll('.correction-choice')) choice.tabIndex = -1;
+  trigger.setAttribute('aria-expanded', 'false');
+  openCorrectionMenu = null;
+  if (restoreFocus) trigger.focus({ preventScroll: true });
+}
+
+function closeCorrectionMenuFromOutside(event) {
+  if (!openCorrectionMenu) return;
+  const target = event.target;
+  if (target instanceof Element && target.closest('.correction-trigger, .correction-choices')) return;
+  closeOpenCorrectionMenu();
+}
+
+function handleCorrectionMenuKeydown(event, trigger, menu) {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeOpenCorrectionMenu({ restoreFocus: true });
+    return;
+  }
+
+  const choices = [...menu.querySelectorAll('.correction-choice')];
+  const nextIndex = SmartTabMenuNavigation.getNextIndex(
+    event.key,
+    choices.indexOf(document.activeElement),
+    choices.length
+  );
+  if (nextIndex === null) return;
+  event.preventDefault();
+  for (const [index, choice] of choices.entries()) choice.tabIndex = index === nextIndex ? 0 : -1;
+  choices[nextIndex].focus({ preventScroll: true });
 }
 
 async function applyCorrection(tabId, targetCategoryId) {
