@@ -94,7 +94,6 @@ p {
   cursor: pointer;
 }
 
-.workspace-picker-button:hover,
 .workspace-picker-button[aria-expanded="true"] {
   background: var(--sys-state-hover-on-subtle, rgb(32 26 27 / 6%));
 }
@@ -126,14 +125,12 @@ p {
 }
 
 .workspace-picker-chevron {
-  width: 24px;
+  width: 14px;
   height: 24px;
   margin-left: 1px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
   color: var(--on-surface-secondary);
-  transition: background-color 100ms ease;
 }
 
 .workspace-picker-chevron::before {
@@ -144,10 +141,6 @@ p {
   border-bottom: 1.5px solid currentColor;
   transform: translateY(-2px) rotate(45deg);
   transition: transform 120ms ease;
-}
-
-.workspace-picker-button:hover .workspace-picker-chevron {
-  background: color-mix(in srgb, var(--on-surface) 6%, transparent);
 }
 
 .workspace-picker-button[aria-expanded="true"] .workspace-picker-chevron::before {
@@ -853,6 +846,11 @@ p {
 .save-state.is-dirty {
   background: var(--tonal-container);
   color: var(--on-tonal-container);
+}
+
+.save-state.is-error {
+  background: color-mix(in srgb, #b3261e 12%, var(--surface));
+  color: color-mix(in srgb, #b3261e 78%, var(--on-surface));
 }
 
 .editor-content {

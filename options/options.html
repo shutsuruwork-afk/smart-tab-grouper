@@ -23,7 +23,7 @@
         <button id="settingsWorkspaceOption" type="button" role="menuitemradio" aria-checked="true">
           <span class="workspace-menu-check" aria-hidden="true">✓</span>
           <span>分類設定</span>
-          <i id="settingsDirtyIndicator" class="dirty-indicator" aria-label="未保存の変更あり" hidden></i>
+          <i id="settingsDirtyIndicator" class="dirty-indicator" aria-label="自動保存待ちの変更あり" hidden></i>
         </button>
         <button id="organizerWorkspaceOption" type="button" role="menuitemradio" aria-checked="false">
           <span class="workspace-menu-check" aria-hidden="true">✓</span>
@@ -83,7 +83,6 @@
         <div class="editor-header-actions">
           <span id="saveState" class="save-state">保存済み</span>
           <button id="discardButton" class="button button-secondary button-compact" type="button" disabled>戻す</button>
-          <button id="saveButton" class="button button-primary button-compact" type="button" disabled>保存</button>
         </div>
       </header>
 
@@ -310,11 +309,12 @@
   <script src="../utils/keyboard_shortcuts.js"></script>
   <script src="../utils/settings_storage.js"></script>
   <script src="../utils/settings_concurrency.js"></script>
+  <script src="../utils/settings_history.js?v=1"></script>
   <script src="../utils/action_reconciliation.js"></script>
   <script src="../utils/action_expiry.js?v=1"></script>
   <script src="../utils/retry_backoff.js?v=1"></script>
   <script src="../utils/list_focus.js?v=1"></script>
   <script src="../utils/menu_navigation.js?v=1"></script>
-  <script type="module" src="options.js?v=list-navigation-v1"></script>
+  <script type="module" src="options.js?v=settings-autosave-v1"></script>
 </body>
 </html>

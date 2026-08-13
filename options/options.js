@@ -20,9 +20,15 @@ const PREVIEW_STORAGE_KEY = 'smart-tab-grouper-options-preview-v2';
 const PREVIEW_CONTENT_ACCESS_KEY = 'smart-tab-grouper-options-preview-content-access';
 const MANAGED_GROUPS_STORAGE_KEY = 'smartTabGrouperManagedGroupsV1';
 const UNGROUPED_SELECTION_ID = 'ungrouped';
+const SETTINGS_AUTO_SAVE_DELAY = 700;
 const previewMode = new URLSearchParams(window.location.search).get('preview') === '1';
 const storage = createStorageAdapter();
 const organizer = createOrganizerAdapter();
+const settingsHistory = SmartTabSettingsHistory.create({
+  clone,
+  equals: SmartTabSettingsConcurrency.deepEqual
+});
+const settingsSaveRetry = SmartTabRetryBackoff.create({ delays: [2500, 8000] });
 
 const workspacePickerButton = document.getElementById('workspacePickerButton');
 const workspaceTitle = document.getElementById('workspaceTitle');
@@ -59,7 +65,6 @@ const emptyDomains = document.getElementById('emptyDomains');
 const colorOptions = document.getElementById('colorOptions');
 const changeSummary = document.getElementById('changeSummary');
 const discardButton = document.getElementById('discardButton');
-const saveButton = document.getElementById('saveButton');
 const toast = document.getElementById('toast');
 const previewBadge = document.getElementById('previewBadge');
 const refreshGroupsButton = document.getElementById('refreshGroupsButton');
@@ -135,6 +140,9 @@ let externalSettingsChanged = false;
 let externalSettingsRefreshTimer = null;
 let settingsSyncGeneration = 0;
 let settingsSaveInFlight = false;
+let settingsAutoSaveTimer = null;
+let settingsAutoSaveQueued = false;
+let settingsSaveError = false;
 
 document.addEventListener('DOMContentLoaded', initialize);
 
@@ -163,7 +171,7 @@ async function initialize() {
 
   renderCategoryList();
   renderEditor();
-  markDirty();
+  markDirty({ autoSave: false, captureHistory: false });
 
   workspacePickerButton.addEventListener('click', toggleWorkspaceMenu);
   settingsWorkspaceOption.addEventListener('click', () => switchWorkspace('settings', { restoreFocus: true }));
@@ -181,7 +189,6 @@ async function initialize() {
   groupUnmatchedToggle.addEventListener('change', changeUnmatchedBehavior);
   categoryEnabledToggle.addEventListener('change', changeCategoryEnabled);
   behaviorOrganizeButton.addEventListener('click', organizeFromBehaviorSettings);
-  saveButton.addEventListener('click', saveChanges);
   discardButton.addEventListener('click', discardChanges);
   refreshGroupsButton.addEventListener('click', () => loadOrganizerWorkspace({ announce: true }));
   bindVerticalListNavigation(currentGroupList, '.current-group-item');
@@ -295,7 +302,7 @@ async function switchWorkspace(workspace, { updateHash = true, restoreFocus = fa
     if (dirty) {
       setOrganizerStatus(externalSettingsChanged
         ? '別の画面で設定が変わりました。最新を読み込んでから分類できます。'
-        : '未保存の分類設定があります。保存するか戻してから分類できます。');
+        : '分類設定を自動保存しています。完了後に分類できます。');
     }
   }
 }
@@ -623,7 +630,7 @@ function getUngroupedSelection() {
 
 async function openOrganizeDialog({ refresh = true } = {}) {
   if (dirty) {
-    setOrganizerStatus('分類設定を保存するか破棄してから実行してください。', true);
+    setOrganizerStatus('分類設定の自動保存が完了してから実行できます。', true);
     return;
   }
   if (refresh && !(await loadOrganizerWorkspace())) return;
@@ -660,7 +667,7 @@ function renderWindowOrganizeConfirmation(preview, { stateChanged = false } = {}
 
 async function openGroupReorganizationDialog() {
   if (dirty) {
-    setOrganizerStatus('分類設定を保存するか破棄してから実行してください。', true);
+    setOrganizerStatus('分類設定の自動保存が完了してから実行できます。', true);
     return;
   }
   if (!ensureOrganizerStateIsCurrent()) return;
@@ -700,7 +707,7 @@ async function openGroupReorganizationDialog() {
 
 function openGroupEditDialog() {
   if (dirty) {
-    setOrganizerStatus('分類設定を保存するか破棄してから編集してください。', true);
+    setOrganizerStatus('分類設定の自動保存が完了してから編集できます。', true);
     return;
   }
   if (!ensureOrganizerStateIsCurrent()) return;
@@ -1035,7 +1042,12 @@ function getOrganizerProgressMessage(operationType) {
 function updateOrganizerControls() {
   const previewCount = Number(organizerState?.preview?.count) || 0;
   const hasPotentialTargets = hasOrganizerPotentialTargets();
-  const blocked = organizerLoading || organizerStateStale || dirty || organizerState?.inProgress === true;
+  const blocked = organizerLoading
+    || organizerStateStale
+    || dirty
+    || settingsSaveInFlight
+    || externalSettingsChanged
+    || organizerState?.inProgress === true;
   refreshGroupsButton.disabled = organizerLoading;
   organizeWindowButton.disabled = blocked || !hasPotentialTargets;
   const selectedGroup = getSelectedOrganizerGroup();
@@ -1053,7 +1065,7 @@ function updateOrganizerControls() {
   editGroupButton.disabled = blocked || !canEditGroup;
   reorganizeGroupButton.disabled = blocked || !canReorganizeGroup;
   organizeWindowButton.title = dirty
-    ? '分類設定を保存するか破棄してから実行できます'
+    ? '分類設定の自動保存が完了してから実行できます'
     : organizerStateStale
       ? '最新のタブ状態を確認してから実行できます'
       : organizerState?.inProgress
@@ -1065,7 +1077,7 @@ function updateOrganizerControls() {
     ? blocked || !(pendingGroupReorganization?.movedCount > 0)
     : blocked || !hasPotentialTargets;
   reorganizeGroupButton.title = dirty
-    ? '分類設定を保存するか破棄してから実行できます'
+    ? '分類設定の自動保存が完了してから実行できます'
     : organizerStateStale
       ? '最新のタブ状態を確認してから実行できます'
       : organizerState?.inProgress
@@ -1076,7 +1088,7 @@ function updateOrganizerControls() {
             : '2件以上のタブがあるグループを選んでください'
           : '';
   editGroupButton.title = dirty
-    ? '分類設定を保存するか破棄してから編集できます'
+    ? '分類設定の自動保存が完了してから編集できます'
     : organizerStateStale
       ? '最新のタブ状態を確認してから編集できます'
       : organizerState?.inProgress
@@ -1189,6 +1201,9 @@ async function refreshExternalSettingsState(generation) {
 
 function flagExternalSettingsConflict() {
   const wasChanged = externalSettingsChanged;
+  cancelSettingsAutoSave();
+  settingsAutoSaveQueued = false;
+  settingsSaveError = false;
   externalSettingsChanged = true;
   updateDirtyState();
   if (activeWorkspace === 'organizer') {
@@ -1772,7 +1787,7 @@ async function changeContentClassificationBehavior(event) {
     } else {
       showToast(savedOrganizeSettings.contentClassificationEnabled
         ? 'サイトアクセスを許可しました'
-        : 'サイトアクセスを許可しました。設定を保存してください');
+        : 'サイトアクセスを許可しました。設定を自動保存します');
     }
   }
   renderBehaviorSettings();
@@ -1872,6 +1887,9 @@ async function applyStoredSettingsState(stored) {
 
 async function applySettingsSnapshots(savedSnapshot, currentSnapshot) {
   const currentSelection = selectedCategoryId;
+  cancelSettingsAutoSave();
+  settingsHistory.clear();
+  settingsSaveError = false;
   categories = clone(currentSnapshot.categories);
   uiTheme = clone(currentSnapshot.uiTheme);
   organizeSettings = clone(currentSnapshot.settings);
@@ -1931,14 +1949,21 @@ async function checkSettingsBeforeSave() {
   return 'conflict';
 }
 
-async function saveChanges() {
+async function saveChanges({ recordHistory = true, successMessage = '' } = {}) {
+  if (settingsSaveInFlight) {
+    settingsAutoSaveQueued = true;
+    return false;
+  }
   settingsSyncGeneration += 1;
   clearTimeout(externalSettingsRefreshTimer);
   externalSettingsRefreshTimer = null;
+  cancelSettingsAutoSave();
+  settingsAutoSaveQueued = false;
   settingsSaveInFlight = true;
-  saveButton.disabled = true;
   discardButton.disabled = true;
+  settingsSaveError = false;
   changeSummary.textContent = '保存しています…';
+  updateDirtyState();
 
   try {
     const syncResult = await checkSettingsBeforeSave();
@@ -1971,18 +1996,16 @@ async function saveChanges() {
       return false;
     }
 
-    let saved = await storage.save(
-      { categories, uiTheme, settings: organizeSettings },
-      getSavedSettingsSnapshot()
-    );
+    let snapshotToSave = clone(getCurrentSettingsSnapshot());
+    let expectedSnapshot = clone(getSavedSettingsSnapshot());
+    let saved = await storage.save(snapshotToSave, expectedSnapshot);
     if (!saved) {
       const retrySyncResult = await checkSettingsBeforeSave();
       if (retrySyncResult === 'complete') return true;
       if (retrySyncResult === 'conflict') return false;
-      saved = await storage.save(
-        { categories, uiTheme, settings: organizeSettings },
-        getSavedSettingsSnapshot()
-      );
+      snapshotToSave = clone(getCurrentSettingsSnapshot());
+      expectedSnapshot = clone(getSavedSettingsSnapshot());
+      saved = await storage.save(snapshotToSave, expectedSnapshot);
       if (!saved) {
         flagExternalSettingsConflict();
         return false;
@@ -1990,8 +2013,8 @@ async function saveChanges() {
     }
     let accessRemoved = true;
     if (
-      !organizeSettings.contentClassificationEnabled
-      && savedOrganizeSettings.contentClassificationEnabled
+      !snapshotToSave.settings.contentClassificationEnabled
+      && expectedSnapshot.settings.contentClassificationEnabled
     ) {
       try {
         accessRemoved = await storage.removeContentClassificationAccess();
@@ -2003,24 +2026,38 @@ async function saveChanges() {
         accessRemoved = false;
       }
     }
-    savedCategories = clone(categories);
-    savedUiTheme = clone(uiTheme);
-    savedOrganizeSettings = clone(organizeSettings);
+    savedCategories = clone(snapshotToSave.categories);
+    savedUiTheme = clone(snapshotToSave.uiTheme);
+    savedOrganizeSettings = clone(snapshotToSave.settings);
     externalSettingsChanged = false;
-    if (organizeSettings.contentClassificationEnabled) await finishContentAccessDraft();
-    dirty = false;
+    if (snapshotToSave.settings.contentClassificationEnabled) await finishContentAccessDraft();
+    dirty = !SmartTabSettingsConcurrency.deepEqual(
+      getCurrentSettingsSnapshot(),
+      snapshotToSave
+    );
+    if (recordHistory) {
+      settingsHistory.commit(snapshotToSave, { continueEditing: dirty });
+    } else {
+      settingsHistory.clear();
+    }
+    settingsSaveRetry.reset();
+    if (dirty) scheduleSettingsAutoSave();
     updateDirtyState();
     if (selectedView === 'behavior') renderBehaviorSettings();
-    showToast(
-      !accessRemoved
-        ? '設定は保存しました。サイトアクセスはChromeの拡張機能設定から解除できます'
-        : previewMode ? 'プレビュー設定を保存しました' : '設定を保存しました'
-    );
+    if (!accessRemoved) {
+      showToast('設定は保存しました。サイトアクセスはChromeの拡張機能設定から解除できます');
+    } else if (successMessage) {
+      showToast(successMessage);
+    }
     return true;
   } catch (error) {
     console.error('Settings save failed:', error);
     contentClassificationAccessChecking = false;
-    dirty = true;
+    dirty = !SmartTabSettingsConcurrency.deepEqual(
+      getCurrentSettingsSnapshot(),
+      getSavedSettingsSnapshot()
+    );
+    settingsSaveError = dirty;
     updateDirtyState();
     if (selectedView === 'behavior') renderBehaviorSettings();
     const isQuotaError = /quota|max_write|bytes/i.test(String(error?.message || error));
@@ -2029,9 +2066,19 @@ async function saveChanges() {
         ? 'Chromeの同期容量を超えたため保存できませんでした。登録内容を減らして再試行してください'
         : '保存できませんでした。変更はこの画面に残っています'
     );
+    if (dirty && !isQuotaError) {
+      const retryDelay = settingsSaveRetry.nextDelay();
+      if (retryDelay !== null) scheduleSettingsAutoSave(retryDelay, { clearError: false });
+    }
     return false;
   } finally {
     settingsSaveInFlight = false;
+    if (
+      settingsAutoSaveQueued
+      && dirty
+      && !externalSettingsChanged
+      && settingsAutoSaveTimer === null
+    ) scheduleSettingsAutoSave();
     updateDirtyState();
   }
 }
@@ -2040,22 +2087,42 @@ async function discardChanges() {
   settingsSyncGeneration += 1;
   clearTimeout(externalSettingsRefreshTimer);
   externalSettingsRefreshTimer = null;
+  cancelSettingsAutoSave();
   discardButton.disabled = true;
   const hadExternalSettingsChange = externalSettingsChanged;
-  let latest;
-  try {
-    latest = await storage.load();
-  } catch (error) {
-    updateDirtyState();
-    showToast('最新の設定を読み込めませんでした');
-    return false;
+  let targetSnapshot;
+  if (hadExternalSettingsChange) {
+    let latest;
+    try {
+      latest = await storage.load();
+    } catch (error) {
+      updateDirtyState();
+      showToast('最新の設定を読み込めませんでした');
+      return false;
+    }
+    targetSnapshot = getStoredSettingsSnapshot(latest);
+    await applyStoredSettingsState(targetSnapshot);
+  } else {
+    targetSnapshot = settingsHistory.getRevertTarget({
+      dirty,
+      savedSnapshot: getSavedSettingsSnapshot()
+    });
+    if (!targetSnapshot) {
+      updateDirtyState();
+      return false;
+    }
+    if (!await ensureContentAccessForSnapshot(targetSnapshot)) {
+      updateDirtyState();
+      showToast('サイトアクセスが許可されなかったため、前の設定へ戻せませんでした');
+      return false;
+    }
+    settingsHistory.clear();
+    applyCurrentSettingsSnapshot(targetSnapshot);
   }
 
-  const latestSnapshot = getStoredSettingsSnapshot(latest);
   const removeDraftAccess = contentAccessDraftActive
     && contentClassificationAccessGranted
-    && !latestSnapshot.settings.contentClassificationEnabled;
-  await applyStoredSettingsState(latestSnapshot);
+    && !targetSnapshot.settings.contentClassificationEnabled;
   if (removeDraftAccess) {
     contentClassificationAccessChecking = true;
     try {
@@ -2077,31 +2144,128 @@ async function discardChanges() {
   applyUiTheme();
   renderCategoryList();
   renderEditor();
-  markDirty();
-  if (hadExternalSettingsChange) showToast('最新の設定を読み込みました');
+  markDirty({ autoSave: false, captureHistory: false });
+  if (hadExternalSettingsChange) {
+    showToast('最新の設定を読み込みました');
+  } else if (dirty) {
+    const restored = await saveChanges({
+      recordHistory: false,
+      successMessage: '前の設定に戻しました'
+    });
+    if (!restored) return false;
+  } else {
+    showToast('変更を戻しました');
+  }
   return true;
 }
 
-function markDirty() {
+async function ensureContentAccessForSnapshot(snapshot) {
+  if (
+    !snapshot.settings.contentClassificationEnabled
+    || contentClassificationAccessGranted
+  ) return true;
+
+  contentClassificationAccessChecking = true;
+  if (selectedView === 'behavior') renderBehaviorSettings();
+  let granted = false;
+  try {
+    const shouldTrackDraft = !savedOrganizeSettings.contentClassificationEnabled;
+    const tracked = !shouldTrackDraft || await storage.beginContentAccessDraft();
+    if (!tracked) return false;
+    contentAccessDraftActive = shouldTrackDraft;
+    granted = await storage.requestContentClassificationAccess();
+  } catch (error) {
+    granted = false;
+  } finally {
+    contentClassificationAccessChecking = false;
+  }
+  contentClassificationAccessGranted = granted;
+  if (!granted) await finishContentAccessDraft();
+  if (selectedView === 'behavior') renderBehaviorSettings();
+  return granted;
+}
+
+function applyCurrentSettingsSnapshot(snapshot) {
+  const currentSelection = selectedCategoryId;
+  categories = clone(snapshot.categories);
+  uiTheme = clone(snapshot.uiTheme);
+  organizeSettings = clone(snapshot.settings);
+  selectedCategoryId = categories.some((item) => item.id === currentSelection)
+    ? currentSelection
+    : categories[0]?.id || null;
+}
+
+function markDirty({ autoSave = true, captureHistory = true } = {}) {
+  const wasDirty = dirty;
   dirty = !SmartTabSettingsConcurrency.deepEqual(
     getCurrentSettingsSnapshot(),
     getSavedSettingsSnapshot()
   );
+  if (dirty && captureHistory && !wasDirty) {
+    settingsHistory.beginEdit(getSavedSettingsSnapshot());
+  }
+  if (!dirty) {
+    cancelSettingsAutoSave();
+    settingsHistory.cancelEdit();
+    settingsSaveError = false;
+    settingsSaveRetry.reset();
+  } else if (autoSave && !externalSettingsChanged) {
+    settingsSaveError = false;
+    settingsSaveRetry.reset();
+    scheduleSettingsAutoSave();
+  }
   updateDirtyState();
+}
+
+function scheduleSettingsAutoSave(delay = SETTINGS_AUTO_SAVE_DELAY, { clearError = true } = {}) {
+  clearTimeout(settingsAutoSaveTimer);
+  settingsAutoSaveTimer = null;
+  if (!dirty || externalSettingsChanged) return;
+  if (settingsSaveInFlight) {
+    settingsAutoSaveQueued = true;
+    return;
+  }
+  if (clearError) settingsSaveError = false;
+  settingsAutoSaveTimer = setTimeout(() => {
+    settingsAutoSaveTimer = null;
+    void saveChanges();
+  }, delay);
+  updateDirtyState();
+}
+
+function cancelSettingsAutoSave() {
+  clearTimeout(settingsAutoSaveTimer);
+  settingsAutoSaveTimer = null;
 }
 
 function updateDirtyState() {
   const blockedByExternalChange = externalSettingsChanged;
-  saveButton.disabled = !dirty || blockedByExternalChange || settingsSaveInFlight;
-  discardButton.disabled = (!dirty && !blockedByExternalChange) || settingsSaveInFlight;
+  const canRevert = dirty || blockedByExternalChange || settingsHistory.hasUndo();
+  discardButton.disabled = !canRevert || settingsSaveInFlight;
   discardButton.textContent = blockedByExternalChange ? '最新を読込' : '戻す';
-  saveState.textContent = blockedByExternalChange ? '更新あり' : dirty ? '未保存' : '保存済み';
-  saveState.classList.toggle('is-dirty', dirty || blockedByExternalChange);
+  saveState.textContent = blockedByExternalChange
+    ? '更新あり'
+    : settingsSaveInFlight
+      ? '保存中…'
+      : settingsSaveError
+        ? '保存できません'
+        : dirty
+          ? '保存待ち'
+          : '保存済み';
+  saveState.classList.toggle('is-dirty', dirty || blockedByExternalChange || settingsSaveInFlight);
+  saveState.classList.toggle('is-error', settingsSaveError && !blockedByExternalChange);
   settingsDirtyIndicator.hidden = !dirty && !blockedByExternalChange;
+  settingsDirtyIndicator.setAttribute(
+    'aria-label',
+    blockedByExternalChange ? '別の画面に新しい設定あり' : '自動保存待ちの変更あり'
+  );
   changeSummary.textContent = blockedByExternalChange
     ? '別の画面で設定が変わりました。最新を読み込んでください'
-    : dirty ? '未保存の変更があります' : '変更はありません';
-  saveButton.title = blockedByExternalChange ? '最新の設定を読み込んでから編集してください' : '';
+    : settingsSaveInFlight
+      ? '設定を自動保存しています'
+      : settingsSaveError
+        ? '保存できませんでした。変更はこの画面に残っています'
+        : dirty ? '変更をまもなく自動保存します' : '変更は保存済みです';
   updateOrganizerControls();
   updateBehaviorOrganizeButton();
 }
@@ -2110,9 +2274,10 @@ function updateBehaviorOrganizeButton() {
   if (!behaviorOrganizeButton) return;
   behaviorOrganizeButton.textContent = externalSettingsChanged
     ? '最新を読込後に分類'
-    : dirty ? '保存して分類' : '分類を実行';
+    : dirty || settingsSaveInFlight ? '保存後に分類' : '分類を実行';
   behaviorOrganizeButton.disabled = behaviorActionRunning
     || contentClassificationAccessChecking
+    || settingsSaveInFlight
     || externalSettingsChanged;
 }
 
@@ -2189,25 +2354,35 @@ function createStorageAdapter() {
       },
       async save(value, expected) {
         const [current, currentCategories] = await Promise.all([
-          chrome.storage.sync.get(['uiTheme', 'settings']),
+          chrome.storage.sync.get([
+            'uiTheme',
+            'settings',
+            SmartTabSettingsStorage.MANIFEST_KEY
+          ]),
           SmartTabSettingsStorage.loadCategories(chrome.storage.sync, FALLBACK_CATEGORIES)
         ]);
+        const currentSnapshot = getStoredSettingsSnapshot({
+          categories: currentCategories,
+          uiTheme: current.uiTheme,
+          settings: current.settings
+        });
+        const valueSnapshot = getStoredSettingsSnapshot(value);
         if (
           expected
-          && !SmartTabSettingsConcurrency.deepEqual(
-            getStoredSettingsSnapshot({
-              categories: currentCategories,
-              uiTheme: current.uiTheme,
-              settings: current.settings
-            }),
-            expected
-          )
+          && !SmartTabSettingsConcurrency.deepEqual(currentSnapshot, expected)
         ) return false;
         const categoriesToSave = normalizeCategories(value.categories, FALLBACK_CATEGORIES);
-        const prepared = await SmartTabSettingsStorage.prepareCategoryWrite(
-          chrome.storage.sync,
-          categoriesToSave
+        const categoriesChanged = !SmartTabSettingsConcurrency.deepEqual(
+          currentSnapshot.categories,
+          valueSnapshot.categories
         );
+        const currentManifest = current[SmartTabSettingsStorage.MANIFEST_KEY];
+        const categoriesNeedMigration = currentManifest?.version !== 2
+          || !Array.isArray(currentManifest.keys)
+          || currentManifest.keys.length === 0;
+        const prepared = (categoriesChanged || categoriesNeedMigration)
+          ? await SmartTabSettingsStorage.prepareCategoryWrite(chrome.storage.sync, categoriesToSave)
+          : null;
         if (expected) {
           const [latest, latestCategories] = await Promise.all([
             chrome.storage.sync.get([
@@ -2219,7 +2394,7 @@ function createStorageAdapter() {
           ]);
           const latestGeneration = latest[SmartTabSettingsStorage.MANIFEST_KEY]?.generation || null;
           if (
-            latestGeneration !== prepared.previousGeneration
+            (prepared && latestGeneration !== prepared.previousGeneration)
             || !SmartTabSettingsConcurrency.deepEqual(
               getStoredSettingsSnapshot({
                 categories: latestCategories,
@@ -2230,10 +2405,15 @@ function createStorageAdapter() {
             )
           ) return false;
         }
-        await SmartTabSettingsStorage.commitCategoryWrite(chrome.storage.sync, prepared, {
+        const scalarValues = {
           uiTheme: SmartTabTheme.normalizeConfig(value.uiTheme),
           settings: normalizeOrganizeSettings(value.settings)
-        });
+        };
+        if (prepared) {
+          await SmartTabSettingsStorage.commitCategoryWrite(chrome.storage.sync, prepared, scalarValues);
+        } else {
+          await chrome.storage.sync.set(scalarValues);
+        }
         const [confirmed, confirmedCategories] = await Promise.all([
           chrome.storage.sync.get(['uiTheme', 'settings']),
           SmartTabSettingsStorage.loadCategories(chrome.storage.sync, FALLBACK_CATEGORIES)
