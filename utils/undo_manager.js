@@ -2,7 +2,9 @@ import { MANAGED_GROUPS_STORAGE_KEY } from './safe_organizer.js';
 
 export const ACTIVE_OPERATION_STORAGE_KEY = 'smartTabGrouperActiveOperationV1';
 export const UNDO_RECORDS_STORAGE_KEY = 'smartTabGrouperUndoRecordsV1';
+export const UNDO_RECEIPTS_STORAGE_KEY = 'smartTabGrouperUndoReceiptsV1';
 export const UNDO_TTL_MS = 30 * 60 * 1000;
+export const UNDO_RECEIPT_TTL_MS = 5 * 60 * 1000;
 export const OPERATION_LEASE_MS = 60 * 1000;
 
 export async function acquireOperationLease(
@@ -125,17 +127,45 @@ export async function updateUndoRecord(
 }
 
 export async function clearUndoForWindow(chromeApi, windowId, now = () => Date.now()) {
-  const records = await loadUndoRecords(chromeApi, now());
-  delete records[String(windowId)];
-  await chromeApi.storage.session.set({ [UNDO_RECORDS_STORAGE_KEY]: records });
+  const timestamp = now();
+  const [records, receipts] = await Promise.all([
+    loadUndoRecords(chromeApi, timestamp),
+    loadUndoReceipts(chromeApi, timestamp)
+  ]);
+  const windowKey = String(windowId);
+  delete records[windowKey];
+  delete receipts[windowKey];
+  await chromeApi.storage.session.set({
+    [UNDO_RECORDS_STORAGE_KEY]: records,
+    [UNDO_RECEIPTS_STORAGE_KEY]: receipts
+  });
 }
 
-export async function undoLastOperation(chromeApi, windowId, now = () => Date.now()) {
-  const records = await loadUndoRecords(chromeApi, now());
+export async function undoLastOperation(
+  chromeApi,
+  windowId,
+  now = () => Date.now(),
+  expectedOperationId = null
+) {
+  const timestamp = now();
+  const [records, receipts] = await Promise.all([
+    loadUndoRecords(chromeApi, timestamp),
+    loadUndoReceipts(chromeApi, timestamp)
+  ]);
   const windowKey = String(windowId);
   const record = records[windowKey];
   if (!record) {
+    const receipt = receipts[windowKey];
+    if (expectedOperationId && receipt?.operationId === expectedOperationId) {
+      return structuredClone(receipt.result);
+    }
     return { success: false, message: '元に戻せる整理はありません。' };
+  }
+  if (expectedOperationId && record.operationId !== expectedOperationId) {
+    return {
+      success: false,
+      message: '表示後に別の整理が完了したため、元に戻していません。状態を更新してください。'
+    };
   }
 
   const restored = await restoreRecordedTabs(chromeApi, {
@@ -155,9 +185,7 @@ export async function undoLastOperation(chromeApi, windowId, now = () => Date.no
     );
   }
 
-  delete records[windowKey];
-  await chromeApi.storage.session.set({ [UNDO_RECORDS_STORAGE_KEY]: records });
-  return {
+  const result = {
     success: true,
     restoredCount: restored.restoredCount,
     skippedCount: restored.skippedCount,
@@ -170,6 +198,17 @@ export async function undoLastOperation(chromeApi, windowId, now = () => Date.no
       || restoredGroups.errors.length > 0,
     message: buildUndoMessage(restored, restoredGroups)
   };
+  delete records[windowKey];
+  receipts[windowKey] = {
+    operationId: record.operationId,
+    expiresAt: timestamp + UNDO_RECEIPT_TTL_MS,
+    result
+  };
+  await chromeApi.storage.session.set({
+    [UNDO_RECORDS_STORAGE_KEY]: records,
+    [UNDO_RECEIPTS_STORAGE_KEY]: receipts
+  });
+  return result;
 }
 
 export async function recoverStaleOperation(chromeApi, now = () => Date.now()) {
@@ -458,6 +497,23 @@ async function loadUndoRecords(chromeApi, timestamp) {
     await chromeApi.storage.session.set({ [UNDO_RECORDS_STORAGE_KEY]: records });
   }
   return records;
+}
+
+async function loadUndoReceipts(chromeApi, timestamp) {
+  const data = await chromeApi.storage.session.get([UNDO_RECEIPTS_STORAGE_KEY]);
+  const source = data[UNDO_RECEIPTS_STORAGE_KEY];
+  const receipts = source && typeof source === 'object' ? { ...source } : {};
+  let changed = false;
+  for (const [key, receipt] of Object.entries(receipts)) {
+    if (!receipt || Number(receipt.expiresAt) <= timestamp || !receipt.result) {
+      delete receipts[key];
+      changed = true;
+    }
+  }
+  if (changed) {
+    await chromeApi.storage.session.set({ [UNDO_RECEIPTS_STORAGE_KEY]: receipts });
+  }
+  return receipts;
 }
 
 async function getRawUndoRecord(chromeApi, windowId) {

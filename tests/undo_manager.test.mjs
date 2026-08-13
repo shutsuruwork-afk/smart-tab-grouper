@@ -10,6 +10,7 @@ import {
   recoverStaleOperation,
   rollbackCompletedOperation,
   undoLastOperation,
+  UNDO_RECEIPT_TTL_MS,
   UNDO_TTL_MS
 } from '../utils/undo_manager.js';
 import { MANAGED_GROUPS_STORAGE_KEY } from '../utils/safe_organizer.js';
@@ -73,6 +74,82 @@ test('整理後にユーザーが別グループへ動かしたタブはCtrl+Z�
   assert.equal(result.skippedCount, 1);
   assert.equal(chromeApi.state.tabs[0].groupId, 999);
   assert.equal(chromeApi.state.tabs[1].groupId, -1);
+});
+
+test('古い画面のUndoは後から完了した別の操作を取り消さない', async () => {
+  const chromeApi = createChromeFake([
+    tab(1, { groupId: 101, url: 'https://example.com/a' }),
+    tab(2, { index: 1, groupId: 101, url: 'https://example.com/b' })
+  ]);
+  chromeApi.state.session.smartTabGrouperUndoRecordsV1 = {
+    7: {
+      version: 1,
+      operationId: 'new-operation',
+      windowId: 7,
+      createdAt: 1_000,
+      expiresAt: 10_000,
+      ...undoDataForTwoTabs()
+    }
+  };
+
+  const result = await undoLastOperation(chromeApi, 7, () => 2_000, 'old-operation');
+
+  assert.equal(result.success, false);
+  assert.match(result.message, /別の整理/);
+  assert.deepEqual(chromeApi.state.tabs.map((item) => item.groupId), [101, 101]);
+  assert.equal((await getUndoState(chromeApi, 7, () => 2_000)).operationId, 'new-operation');
+});
+
+test('応答を失ったUndoを同じ操作IDで再送しても一度だけ元に戻す', async () => {
+  const chromeApi = createChromeFake([
+    tab(1, { groupId: 101, url: 'https://example.com/a' }),
+    tab(2, { index: 1, groupId: 101, url: 'https://example.com/b' })
+  ]);
+  chromeApi.state.session.smartTabGrouperUndoRecordsV1 = {
+    7: {
+      version: 1,
+      operationId: 'retry-safe-operation',
+      windowId: 7,
+      createdAt: 1_000,
+      expiresAt: 10_000,
+      ...undoDataForTwoTabs()
+    }
+  };
+
+  const first = await undoLastOperation(chromeApi, 7, () => 2_000, 'retry-safe-operation');
+  const second = await undoLastOperation(chromeApi, 7, () => 2_100, 'retry-safe-operation');
+
+  assert.deepEqual(second, first);
+  assert.equal(first.restoredCount, 2);
+  assert.deepEqual(chromeApi.state.tabs.map((item) => item.groupId), [-1, -1]);
+});
+
+test('Undo成功レシートは5分を過ぎると再送結果に使わない', async () => {
+  const chromeApi = createChromeFake([
+    tab(1, { groupId: 101, url: 'https://example.com/a' }),
+    tab(2, { index: 1, groupId: 101, url: 'https://example.com/b' })
+  ]);
+  chromeApi.state.session.smartTabGrouperUndoRecordsV1 = {
+    7: {
+      version: 1,
+      operationId: 'expiring-receipt',
+      windowId: 7,
+      createdAt: 1_000,
+      expiresAt: 1_000 + UNDO_TTL_MS,
+      ...undoDataForTwoTabs()
+    }
+  };
+
+  await undoLastOperation(chromeApi, 7, () => 2_000, 'expiring-receipt');
+  const expired = await undoLastOperation(
+    chromeApi,
+    7,
+    () => 2_000 + UNDO_RECEIPT_TTL_MS + 1,
+    'expiring-receipt'
+  );
+
+  assert.equal(expired.success, false);
+  assert.equal(chromeApi.state.session.smartTabGrouperUndoReceiptsV1['7'], undefined);
 });
 
 test('service workerが中断した操作は期限後にジャーナルから復元する', async () => {

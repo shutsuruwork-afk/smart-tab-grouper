@@ -284,16 +284,18 @@ async function getPopupState(windowId = null) {
   const unresolved = unresolvedTabIds.length;
   const contentClassificationEnabled = settings.contentClassificationEnabled === true;
   const contentClassificationAvailable = contentClassificationEnabled && contentAccessGranted;
+  const activeOperationForWindow = Boolean(
+    activeOperation
+    && activeOperation.windowId === targetWindowId
+    && Number(activeOperation.leaseExpiresAt) > Date.now()
+  );
 
   return {
     success: true,
     windowId: targetWindowId,
     undo,
-    inProgress: Boolean(
-      activeOperation
-      && activeOperation.windowId === targetWindowId
-      && Number(activeOperation.leaseExpiresAt) > Date.now()
-    ),
+    inProgress: activeOperationForWindow,
+    operationType: activeOperationForWindow ? activeOperation.type || 'organize' : null,
     recovery: recovery.recovered && recovery.windowId === targetWindowId ? recovery : null,
     preview: {
       count,
@@ -316,7 +318,7 @@ async function getPopupState(windowId = null) {
   };
 }
 
-async function undoCurrentWindow(windowId = null) {
+async function undoCurrentWindow(windowId = null, expectedOperationId = null) {
   const targetWindowId = Number.isInteger(windowId) ? windowId : (await chrome.windows.getCurrent()).id;
   if (organizeInFlight) return { success: false, message: '別の操作を実行しています。' };
 
@@ -330,7 +332,12 @@ async function undoCurrentWindow(windowId = null) {
     });
     if (!lease.acquired) return { success: false, message: '別の操作を実行しています。' };
     operationId = lease.operation.operationId;
-    const result = await undoLastOperation(chrome, targetWindowId);
+    const result = await undoLastOperation(
+      chrome,
+      targetWindowId,
+      () => Date.now(),
+      expectedOperationId
+    );
     await releaseOperationLease(chrome, operationId);
     operationId = null;
     return result;
@@ -635,7 +642,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.action === "UNDO_LAST_ACTION") {
-    undoCurrentWindow(message.windowId)
+    undoCurrentWindow(message.windowId, message.operationId)
       .then(res => sendResponse(res))
       .catch(error => sendResponse({ success: false, message: error?.message || '元に戻せませんでした。' }));
     return true;

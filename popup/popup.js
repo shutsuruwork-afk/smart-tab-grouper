@@ -49,7 +49,7 @@ function bindStaticActions() {
 function renderPopupState(state) {
   if (Array.isArray(state.categories)) availableCategories = state.categories;
   if (state.inProgress) {
-    renderProgress();
+    renderProgress(state.operationType);
     startProgressPolling();
     return;
   }
@@ -111,9 +111,17 @@ function renderConfirmation(previewState = {}, recovery = null) {
   document.getElementById('btnCancel').focus({ preventScroll: true });
 }
 
-function renderProgress() {
+function renderProgress(operationType = 'organize') {
   showOnly('progressView');
   undoAvailable = false;
+  const content = {
+    undo: ['元に戻しています…', '直前の状態を安全に復元しています。'],
+    correction: ['分類を修正しています…', 'タブの移動とドメイン登録を反映しています。'],
+    reorganize: ['再構成しています…', '選択したグループを安全に分け直しています。'],
+    edit: ['グループを変更しています…', '表示とUndo記録を反映しています。']
+  }[operationType] || ['整理しています…', 'このまま少しお待ちください。'];
+  document.getElementById('progressTitle').textContent = content[0];
+  document.getElementById('progressDescription').textContent = content[1];
 }
 
 function renderCompletion(undoState, fallbackMessage = '') {
@@ -292,6 +300,7 @@ function handleCorrectionMenuKeydown(event, trigger, menu) {
 
 async function applyCorrection(tabId, targetCategoryId) {
   if (!undoAvailable || !currentUndoOperationId) return;
+  const correctionOperationId = currentUndoOperationId;
   undoAvailable = false;
   document.getElementById('btnUndo').disabled = true;
   for (const button of document.querySelectorAll('.correction-trigger, .correction-choice')) {
@@ -303,7 +312,7 @@ async function applyCorrection(tabId, targetCategoryId) {
     const response = await sendAction({
       action: 'CORRECT_CLASSIFICATION',
       windowId: currentWindowId,
-      operationId: currentUndoOperationId,
+      operationId: correctionOperationId,
       tabId,
       targetCategoryId
     });
@@ -311,6 +320,25 @@ async function applyCorrection(tabId, targetCategoryId) {
     renderCompletion(response.undo);
     setStatus('completionStatus', response.message, null);
   } catch (error) {
+    const state = await safeReloadPopupState();
+    if (SmartTabActionReconciliation.isCorrectionApplied(state?.undo, {
+      operationId: correctionOperationId,
+      tabId,
+      targetCategoryId
+    })) {
+      renderPopupState(state);
+      setStatus('completionStatus', '分類ルールの修正結果を確認しました。', null);
+      return;
+    }
+    if (state?.inProgress) {
+      renderPopupState(state);
+      return;
+    }
+    if (state?.undo?.available && state.undo.operationId !== correctionOperationId) {
+      renderPopupState(state);
+      setStatus('completionStatus', '別の整理結果へ更新されたため、修正していません。', 'error');
+      return;
+    }
     undoAvailable = true;
     document.getElementById('btnUndo').disabled = false;
     for (const button of document.querySelectorAll('.correction-trigger, .correction-choice')) {
@@ -321,6 +349,7 @@ async function applyCorrection(tabId, targetCategoryId) {
 }
 
 async function organizeCurrentWindow() {
+  const previousUndoOperationId = currentUndoOperationId;
   renderProgress();
   try {
     const response = await sendAction({
@@ -338,9 +367,17 @@ async function organizeCurrentWindow() {
     }
   } catch (error) {
     const state = await safeReloadPopupState();
-    if (state?.undo?.available) {
-      renderCompletion(state.undo);
+    const reconciliation = SmartTabActionReconciliation.reconcileMutationState(
+      state,
+      previousUndoOperationId
+    );
+    if (reconciliation.action === SmartTabActionReconciliation.ACTIONS.COMPLETED) {
+      renderPopupState(state);
       setStatus('completionStatus', '整理結果を確認しました。', null);
+      return;
+    }
+    if (reconciliation.action === SmartTabActionReconciliation.ACTIONS.IN_PROGRESS) {
+      renderPopupState(state);
       return;
     }
     renderConfirmation(state?.preview || { count: null });
@@ -369,10 +406,7 @@ async function undoLastAction() {
   setStatus('completionStatus', '元に戻しています…', null);
 
   try {
-    const response = await sendAction({
-      action: 'UNDO_LAST_ACTION',
-      windowId: currentWindowId
-    });
+    const response = await sendUndoAction(undoOperationId);
     if (!response?.success) throw new Error(response?.message || '元に戻せませんでした。');
     currentUndoOperationId = null;
     document.getElementById('completionTitle').textContent = '元に戻しました';
@@ -383,11 +417,39 @@ async function undoLastAction() {
     setStatus('completionStatus', response.partial ? '後から変更されたタブはそのまま残しています。' : '', null);
     document.getElementById('btnClose').focus({ preventScroll: true });
   } catch (error) {
+    const state = await safeReloadPopupState();
+    if (state?.inProgress) {
+      renderPopupState(state);
+      return;
+    }
+    if (state?.undo?.available) {
+      renderPopupState(state);
+      setStatus('completionStatus', error?.message || '元に戻せませんでした。', 'error');
+      return;
+    }
+    if (state?.success) {
+      renderConfirmation(state.preview);
+      setStatus('confirmationStatus', '現在の状態を確認しました。元に戻せる操作は残っていません。', null);
+      return;
+    }
     undoAvailable = true;
     currentUndoOperationId = undoOperationId;
     undoButton.hidden = false;
     undoButton.disabled = false;
     setStatus('completionStatus', error?.message || '元に戻せませんでした。', 'error');
+  }
+}
+
+async function sendUndoAction(operationId) {
+  const message = {
+    action: 'UNDO_LAST_ACTION',
+    windowId: currentWindowId,
+    operationId
+  };
+  try {
+    return await sendAction(message);
+  } catch (error) {
+    return sendAction(message);
   }
 }
 
@@ -448,7 +510,8 @@ function startProgressPolling() {
 
 async function safeReloadPopupState() {
   try {
-    return await sendAction({ action: 'GET_POPUP_STATE', windowId: currentWindowId });
+    const state = await sendAction({ action: 'GET_POPUP_STATE', windowId: currentWindowId });
+    return state?.success ? state : null;
   } catch (error) {
     return null;
   }
@@ -522,6 +585,10 @@ function createPreviewAdapter() {
     : SmartTabTheme.normalizeConfig({ mode: 'preset', preset: palette });
   const storageKey = 'smart-tab-grouper-popup-preview-undo';
   const actionDelay = clampDelay(params.get('actionDelay'), 700);
+  let undoReceipt = null;
+  let lostUndoResponse = false;
+  let lostOrganizeResponse = false;
+  let lostCorrectionResponse = false;
 
   return Object.freeze({
     theme: theme === 'dark' ? 'dark' : 'light',
@@ -555,8 +622,28 @@ function createPreviewAdapter() {
         return { success: false, message: '整理できませんでした。もう一度お試しください。' };
       }
       if (message.action === 'UNDO_LAST_ACTION') {
+        const undo = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+        if (!undo) {
+          if (undoReceipt?.operationId === message.operationId) return undoReceipt.result;
+          return { success: false, message: '元に戻せる整理はありません。' };
+        }
+        if (message.operationId && undo.operationId !== message.operationId) {
+          return { success: false, message: '表示後に別の整理が完了したため、元に戻していません。' };
+        }
+        const result = {
+          success: true,
+          restoredCount: 4,
+          skippedCount: 0,
+          partial: false,
+          message: '4件を元に戻しました。'
+        };
         sessionStorage.removeItem(storageKey);
-        return { success: true, restoredCount: 4, skippedCount: 0, partial: false, message: '4件を元に戻しました。' };
+        undoReceipt = { operationId: undo.operationId, result };
+        if (params.get('loss') === 'undo' && !lostUndoResponse) {
+          lostUndoResponse = true;
+          throw new Error('Undoの応答を確認できませんでした。');
+        }
+        return result;
       }
       if (message.action === 'CORRECT_CLASSIFICATION') {
         const undo = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
@@ -582,6 +669,10 @@ function createPreviewAdapter() {
         group.tabs.push(tab);
         group.count = group.tabs.length;
         sessionStorage.setItem(storageKey, JSON.stringify(undo));
+        if (params.get('loss') === 'correction' && !lostCorrectionResponse) {
+          lostCorrectionResponse = true;
+          throw new Error('分類修正の応答を確認できませんでした。');
+        }
         return { success: true, undo, message: `${getHostname(tab.url)} を「${target.name}」へ登録しました。` };
       }
       if (message.action === 'ORGANIZE_CURRENT_WINDOW_CONFIRMED') {
@@ -612,6 +703,10 @@ function createPreviewAdapter() {
           }
         };
         sessionStorage.setItem(storageKey, JSON.stringify(undo));
+        if (params.get('loss') === 'organize' && !lostOrganizeResponse) {
+          lostOrganizeResponse = true;
+          throw new Error('整理の応答を確認できませんでした。');
+        }
         return { success: true, changed: true, count: 4, undo };
       }
       return { success: true };

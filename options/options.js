@@ -392,7 +392,7 @@ function handleGlobalKeydown(event) {
 }
 
 async function loadOrganizerWorkspace({ announce = false } = {}) {
-  if (organizerLoading) return;
+  if (organizerLoading) return false;
   organizerLoading = true;
   refreshGroupsButton.disabled = true;
   organizeWindowButton.disabled = true;
@@ -413,7 +413,7 @@ async function loadOrganizerWorkspace({ announce = false } = {}) {
         : organizerState.groups[0]?.id ?? null;
     renderOrganizerWorkspace();
     if (organizerState.inProgress) {
-      setOrganizerStatus('別の整理処理を実行しています。完了後に自動更新します。');
+      setOrganizerStatus(getOrganizerProgressMessage(organizerState.operationType));
       scheduleOrganizerRefresh(600);
     } else if (organizerState.recovery?.recovered) {
       setOrganizerStatus(
@@ -425,11 +425,13 @@ async function loadOrganizerWorkspace({ announce = false } = {}) {
     } else if (announce) {
       setOrganizerStatus('現在の状態に更新しました。');
     }
+    return true;
   } catch (error) {
     organizerState = { groups: [], tabs: [], preview: null, undo: null };
     selectedCurrentGroupId = null;
     renderOrganizerWorkspace();
     setOrganizerStatus(error?.message || 'タブグループを確認できませんでした。', true);
+    return false;
   } finally {
     organizerLoading = false;
     updateOrganizerControls();
@@ -761,6 +763,8 @@ function getGroupEditDraft() {
 async function saveSelectedGroupEdit() {
   if (!pendingGroupEdit || groupEditSaving) return;
   const edit = pendingGroupEdit;
+  const previousUndoOperationId = organizerState?.undo?.operationId || null;
+  let resultReceived = false;
   groupEditSaving = true;
   groupEditStatus.textContent = '保存しています…';
   updateGroupEditControls();
@@ -771,12 +775,27 @@ async function saveSelectedGroupEdit() {
       edit.expectedFingerprint,
       getGroupEditDraft()
     );
+    resultReceived = true;
     if (!result?.success) throw new Error(result?.message || 'グループを編集できませんでした。');
     groupEditSaving = false;
     closeGroupEditDialog();
     await loadOrganizerWorkspace();
     setOrganizerStatus(result.message || 'グループの表示を変更しました。');
   } catch (error) {
+    if (!resultReceived) {
+      groupEditSaving = false;
+      const reconciliation = await reconcileOrganizerMutation(previousUndoOperationId);
+      if (reconciliation.action === SmartTabActionReconciliation.ACTIONS.COMPLETED) {
+        closeGroupEditDialog();
+        setOrganizerStatus('グループの変更結果を確認しました。');
+        return;
+      }
+      if (reconciliation.action === SmartTabActionReconciliation.ACTIONS.IN_PROGRESS) {
+        closeGroupEditDialog();
+        setOrganizerStatus('グループの変更は続いています。完了後に自動更新します。');
+        return;
+      }
+    }
     groupEditStatus.textContent = error?.message || 'グループを編集できませんでした。';
   } finally {
     groupEditSaving = false;
@@ -825,16 +844,32 @@ function confirmOrganizerDialog() {
 }
 
 async function organizeCurrentWindowFromSettings() {
+  const previousUndoOperationId = organizerState?.undo?.operationId || null;
+  let resultReceived = false;
   confirmOrganizeButton.disabled = true;
   cancelOrganizeButton.disabled = true;
   organizeDialogDescription.textContent = '整理しています…';
   try {
     const result = await organizer.organize(organizerState?.windowId);
+    resultReceived = true;
     if (!result?.success) throw new Error(result?.message || '整理できませんでした。');
     closeOrganizeDialog();
     await loadOrganizerWorkspace();
     setOrganizerStatus(result.message || `${result.count || 0}件を整理しました。`);
   } catch (error) {
+    if (!resultReceived) {
+      const reconciliation = await reconcileOrganizerMutation(previousUndoOperationId);
+      if (reconciliation.action === SmartTabActionReconciliation.ACTIONS.COMPLETED) {
+        closeOrganizeDialog();
+        setOrganizerStatus('整理結果を確認しました。');
+        return;
+      }
+      if (reconciliation.action === SmartTabActionReconciliation.ACTIONS.IN_PROGRESS) {
+        closeOrganizeDialog();
+        setOrganizerStatus('整理は続いています。完了後に自動更新します。');
+        return;
+      }
+    }
     organizeDialogDescription.textContent = error?.message || '整理できませんでした。';
   } finally {
     cancelOrganizeButton.disabled = false;
@@ -845,6 +880,8 @@ async function organizeCurrentWindowFromSettings() {
 async function reorganizeSelectedGroupFromSettings() {
   const preview = pendingGroupReorganization;
   if (!preview) return;
+  const previousUndoOperationId = organizerState?.undo?.operationId || null;
+  let resultReceived = false;
   confirmOrganizeButton.disabled = true;
   cancelOrganizeButton.disabled = true;
   organizeDialogDescription.textContent = '再構成しています…';
@@ -854,11 +891,25 @@ async function reorganizeSelectedGroupFromSettings() {
       preview.groupId,
       preview.fingerprint
     );
+    resultReceived = true;
     if (!result?.success) throw new Error(result?.message || 'グループを再構成できませんでした。');
     closeOrganizeDialog();
     await loadOrganizerWorkspace();
     setOrganizerStatus(result.message || `${result.count || 0}件を分け直しました。`);
   } catch (error) {
+    if (!resultReceived) {
+      const reconciliation = await reconcileOrganizerMutation(previousUndoOperationId);
+      if (reconciliation.action === SmartTabActionReconciliation.ACTIONS.COMPLETED) {
+        closeOrganizeDialog();
+        setOrganizerStatus('再構成結果を確認しました。');
+        return;
+      }
+      if (reconciliation.action === SmartTabActionReconciliation.ACTIONS.IN_PROGRESS) {
+        closeOrganizeDialog();
+        setOrganizerStatus('再構成は続いています。完了後に自動更新します。');
+        return;
+      }
+    }
     organizeDialogDescription.textContent = error?.message || 'グループを再構成できませんでした。';
   } finally {
     cancelOrganizeButton.disabled = false;
@@ -874,11 +925,12 @@ async function undoOrganizerAction() {
     || groupEditDialog.open
     || !workspaceMenu.hidden
   ) return;
+  const undoOperationId = organizerState.undo.operationId;
   organizerState.undo = null;
   organizerUndoHint.hidden = true;
   setOrganizerStatus('元に戻しています…');
   try {
-    const result = await organizer.undo(organizerState.windowId);
+    const result = await organizer.undo(organizerState.windowId, undoOperationId);
     if (!result?.success) throw new Error(result?.message || '元に戻せませんでした。');
     await loadOrganizerWorkspace();
     setOrganizerStatus(result.message);
@@ -888,9 +940,27 @@ async function undoOrganizerAction() {
   }
 }
 
+async function reconcileOrganizerMutation(previousUndoOperationId) {
+  const loaded = await loadOrganizerWorkspace();
+  if (!loaded) return { action: SmartTabActionReconciliation.ACTIONS.UNAVAILABLE };
+  return SmartTabActionReconciliation.reconcileMutationState(
+    { success: true, ...organizerState },
+    previousUndoOperationId
+  );
+}
+
 function setOrganizerStatus(message, error = false) {
   organizerStatus.textContent = message || '';
   organizerStatus.classList.toggle('is-error', error);
+}
+
+function getOrganizerProgressMessage(operationType) {
+  return {
+    undo: '元に戻しています。完了後に自動更新します。',
+    correction: '分類を修正しています。完了後に自動更新します。',
+    reorganize: 'グループを再構成しています。完了後に自動更新します。',
+    edit: 'グループを変更しています。完了後に自動更新します。'
+  }[operationType] || 'タブを整理しています。完了後に自動更新します。';
 }
 
 function updateOrganizerControls() {
@@ -2188,6 +2258,7 @@ function createOrganizerAdapter() {
           preview: popupState.preview,
           undo: popupState.undo,
           inProgress: popupState.inProgress === true,
+          operationType: popupState.operationType || null,
           recovery: popupState.recovery || null
         };
       },
@@ -2221,8 +2292,13 @@ function createOrganizerAdapter() {
           changes
         });
       },
-      undo(windowId) {
-        return chrome.runtime.sendMessage({ action: 'UNDO_LAST_ACTION', windowId });
+      async undo(windowId, operationId) {
+        const message = { action: 'UNDO_LAST_ACTION', windowId, operationId };
+        try {
+          return await chrome.runtime.sendMessage(message);
+        } catch (error) {
+          return chrome.runtime.sendMessage(message);
+        }
       }
     };
   }
@@ -2231,6 +2307,10 @@ function createOrganizerAdapter() {
   let previewReorganized = false;
   let previewUndoAvailable = false;
   let previewUndoAction = null;
+  let previewUndoOperationId = null;
+  let previewOperationCounter = 0;
+  const previewLostResponses = new Set();
+  const previewLoss = new URLSearchParams(window.location.search).get('loss');
   const previewGroupOverrides = new Map();
   const previewTabs = [
     { id: 101, groupId: 11, index: 0, title: 'GitHub — smart-tab-grouper', url: 'https://github.com/example/smart-tab-grouper' },
@@ -2272,9 +2352,10 @@ function createOrganizerAdapter() {
           contentClassificationAvailable: false
         },
         inProgress: false,
+        operationType: null,
         recovery: null,
         undo: previewUndoAvailable
-          ? { available: true, operationId: 'options-preview-organize' }
+          ? { available: true, operationId: previewUndoOperationId }
           : null
       };
     },
@@ -2283,6 +2364,11 @@ function createOrganizerAdapter() {
       previewUndoAction = { type: 'organize', previous: previewOrganized };
       previewOrganized = true;
       previewUndoAvailable = true;
+      previewUndoOperationId = `options-preview-${++previewOperationCounter}`;
+      if (previewLoss === 'organize' && !previewLostResponses.has('organize')) {
+        previewLostResponses.add('organize');
+        throw new Error('整理の応答を確認できませんでした。');
+      }
       return { success: true, count: 2, message: '2件のタブを整理しました。' };
     },
     async previewGroup(windowId, groupId) {
@@ -2327,6 +2413,11 @@ function createOrganizerAdapter() {
       previewUndoAction = { type: 'reorganize', previous: previewReorganized };
       previewReorganized = true;
       previewUndoAvailable = true;
+      previewUndoOperationId = `options-preview-${++previewOperationCounter}`;
+      if (previewLoss === 'reorganize' && !previewLostResponses.has('reorganize')) {
+        previewLostResponses.add('reorganize');
+        throw new Error('再構成の応答を確認できませんでした。');
+      }
       return { success: true, count: 1, message: '1件を1グループへ分け直しました。' };
     },
     async editGroup(windowId, groupId, expectedFingerprint, changes) {
@@ -2344,14 +2435,22 @@ function createOrganizerAdapter() {
         collapsed: changes?.collapsed === true
       });
       previewUndoAvailable = true;
+      previewUndoOperationId = `options-preview-${++previewOperationCounter}`;
+      if (previewLoss === 'edit' && !previewLostResponses.has('edit')) {
+        previewLostResponses.add('edit');
+        throw new Error('グループ変更の応答を確認できませんでした。');
+      }
       return {
         success: true,
         count: 1,
         message: `「${String(changes?.title || '').trim() || '名称なし'}」の表示を変更しました。`
       };
     },
-    async undo() {
+    async undo(windowId, operationId) {
       await waitForPreview(300);
+      if (operationId && operationId !== previewUndoOperationId) {
+        return { success: false, message: '表示後に別の整理が完了したため、元に戻していません。' };
+      }
       if (previewUndoAction?.type === 'organize') {
         previewOrganized = previewUndoAction.previous;
       } else if (previewUndoAction?.type === 'reorganize') {
@@ -2365,6 +2464,7 @@ function createOrganizerAdapter() {
       }
       previewUndoAction = null;
       previewUndoAvailable = false;
+      previewUndoOperationId = null;
       return { success: true, restoredCount: 2, message: '2件を元に戻しました。' };
     }
   };
