@@ -1,217 +1,637 @@
 import { DEFAULT_CATEGORIES, DEFAULT_SETTINGS } from './utils/default_rules.js';
+import { normalizeCategories, normalizeRuleSettings } from './utils/category_rules.js';
+import './utils/settings_storage.js';
 import { classifyTab } from './utils/classifier.js';
+import {
+  createContentAssistedClassifier,
+  hasContentClassificationAccess,
+  prepareContentClassifications
+} from './utils/content_classifier.js';
+import {
+  buildSafeOrganizationPlan,
+  isEligibleForSafeOrganize,
+  organizeTabsSafely
+} from './utils/safe_organizer.js';
+import {
+  acquireOperationLease,
+  appendOperationProgress,
+  clearUndoForWindow,
+  completeUndoRecord,
+  getActiveOperation,
+  getUndoRecord,
+  getUndoState,
+  prepareOperationJournal,
+  recoverStaleOperation,
+  releaseOperationLease,
+  rollbackCompletedOperation,
+  undoLastOperation
+} from './utils/undo_manager.js';
+import { correctTabClassification } from './utils/correction.js';
+import {
+  prepareGroupReorganization,
+  reorganizeGroupSafely
+} from './utils/group_reorganizer.js';
+import { editGroupSafely } from './utils/group_editor.js';
+import {
+  createConfirmedTabStates,
+  createOrganizationPreviewToken,
+  organizationPreviewTokensEqual
+} from './utils/organize_preview.js';
+import {
+  abandonContentAccessDraft,
+  beginContentAccessDraft,
+  commitContentAccessDraft,
+  isOptionsUrl,
+  reconcileContentAccessDrafts,
+  shouldAbandonContentAccessDraft
+} from './utils/content_access_draft.js';
+
+let organizeInFlight = false;
+const OPTIONS_PAGE_URL = chrome.runtime.getURL('options/options.html');
+const settingsStorage = globalThis.SmartTabSettingsStorage;
+
+function reconcileDraftContentAccess() {
+  return reconcileContentAccessDrafts(chrome, OPTIONS_PAGE_URL)
+    .catch((error) => console.warn('Draft content access cleanup failed:', error));
+}
+
+function getOptionsSenderTabId(message, sender) {
+  const senderUrl = sender.url || sender.tab?.pendingUrl || sender.tab?.url;
+  if (!isOptionsUrl(senderUrl, OPTIONS_PAGE_URL)) return null;
+  if (Number.isInteger(sender.tab?.id)) return sender.tab.id;
+  return Number.isInteger(message.tabId) ? message.tabId : null;
+}
+
+void reconcileDraftContentAccess();
+
+chrome.runtime.onStartup?.addListener(reconcileDraftContentAccess);
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  abandonContentAccessDraft(chrome, tabId, OPTIONS_PAGE_URL)
+    .catch((error) => console.warn('Draft content access cleanup failed:', error));
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!shouldAbandonContentAccessDraft(changeInfo, OPTIONS_PAGE_URL)) return;
+  abandonContentAccessDraft(chrome, tabId, OPTIONS_PAGE_URL)
+    .catch((error) => console.warn('Draft content access cleanup failed:', error));
+});
 
 // Initialize extension storage on install
 chrome.runtime.onInstalled.addListener(async () => {
-  const data = await chrome.storage.sync.get(['categories', 'settings']);
-  if (!data.categories) {
-    await chrome.storage.sync.set({ categories: DEFAULT_CATEGORIES });
+  const [data, storedCategories] = await Promise.all([
+    chrome.storage.sync.get(['settings', settingsStorage.MANIFEST_KEY]),
+    settingsStorage.loadCategories(chrome.storage.sync, null)
+  ]);
+  const settings = normalizeSettings(data.settings);
+  const categories = normalizeCategories(storedCategories, DEFAULT_CATEGORIES);
+  const categoriesNeedWrite = !data[settingsStorage.MANIFEST_KEY]
+    || !Array.isArray(storedCategories)
+    || JSON.stringify(categories) !== JSON.stringify(storedCategories);
+  const settingsNeedWrite = JSON.stringify(settings) !== JSON.stringify(data.settings || {});
+
+  if (categoriesNeedWrite) {
+    try {
+      await settingsStorage.saveCategories(chrome.storage.sync, categories, { settings });
+    } catch (error) {
+      console.warn('Category settings migration failed:', error);
+      if (settingsNeedWrite) await chrome.storage.sync.set({ settings });
+    }
+  } else if (settingsNeedWrite) {
+    await chrome.storage.sync.set({ settings });
   }
-  if (!data.settings) {
-    await chrome.storage.sync.set({ settings: DEFAULT_SETTINGS });
-  }
-  console.log("Smart Tab Grouper 1.1.0 initialized.");
+  console.log("Smart Tab Grouper 1.0.0 initialized.");
 });
+
+function normalizeSettings(value = {}) {
+  return normalizeRuleSettings(value, DEFAULT_SETTINGS);
+}
 
 // Helper: Get config
 async function getStorageConfig() {
-  const data = await chrome.storage.sync.get(['categories', 'settings']);
+  const [data, storedCategories] = await Promise.all([
+    chrome.storage.sync.get(['settings']),
+    settingsStorage.loadCategories(chrome.storage.sync, DEFAULT_CATEGORIES)
+  ]);
   return {
-    categories: data.categories || DEFAULT_CATEGORIES,
-    settings: data.settings || DEFAULT_SETTINGS
+    categories: normalizeCategories(storedCategories, DEFAULT_CATEGORIES),
+    settings: normalizeSettings(data.settings)
   };
-}
-
-// Take snapshot of current tab group layout for UNDO capability
-async function saveUndoSnapshot(windowId) {
-  const tabs = await chrome.tabs.query({ windowId });
-  const snapshot = tabs.map(t => ({
-    tabId: t.id,
-    groupId: t.groupId
-  }));
-  await chrome.storage.local.set({ lastUndoSnapshot: snapshot, undoWindowId: windowId });
-}
-
-// Restore tab groups from last snapshot
-async function restoreUndoSnapshot() {
-  const data = await chrome.storage.local.get(['lastUndoSnapshot', 'undoWindowId']);
-  const snapshot = data.lastUndoSnapshot;
-  if (!snapshot || !Array.isArray(snapshot)) {
-    return { success: false, message: "元に戻す履歴がありません。" };
-  }
-
-  // Ungroup all first, then restore
-  const currentTabs = await chrome.tabs.query({ windowId: data.undoWindowId || undefined });
-  const currentTabMap = new Map(currentTabs.map(t => [t.id, t]));
-
-  for (const item of snapshot) {
-    if (currentTabMap.has(item.tabId)) {
-      if (item.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
-        try {
-          await chrome.tabs.ungroup(item.tabId);
-        } catch (e) {}
-      } else {
-        try {
-          await chrome.tabs.group({ tabIds: [item.tabId], groupId: item.groupId });
-        } catch (e) {}
-      }
-    }
-  }
-
-  // Clear snapshot after undo
-  await chrome.storage.local.remove(['lastUndoSnapshot', 'undoWindowId']);
-  return { success: true, count: snapshot.length };
 }
 
 // Dry-Run Simulation Mode: Returns calculated preview without modifying tabs
 async function simulateOrganizeTabs(windowId = null) {
   const { categories, settings } = await getStorageConfig();
-  const queryObj = windowId ? { windowId } : { currentWindow: true };
+  const queryObj = Number.isInteger(windowId) ? { windowId } : { currentWindow: true };
   const tabs = await chrome.tabs.query(queryObj);
+  const tabById = new Map(tabs.map((tab) => [tab.id, tab]));
+  const content = await prepareContentClassifications({
+    chromeApi: chrome,
+    tabs,
+    categories,
+    settings
+  });
+  const classify = createContentAssistedClassifier(content.classifications, settings);
+  const plan = buildSafeOrganizationPlan(tabs, categories, settings, {
+    noneGroupId: chrome.tabGroups.TAB_GROUP_ID_NONE,
+    classify
+  });
 
-  const previewGroups = new Map(); // catId -> { category, tabTitles: [], tabIds: [] }
+  const previewGroups = plan.items.map((item) => ({
+    name: item.category.name,
+    color: item.category.color,
+    count: item.tabIds.length,
+    tabs: item.tabIds.map((tabId) => {
+      const tab = tabById.get(tabId);
+      return {
+        id: tabId,
+        title: tab?.title || tab?.url,
+        url: tab?.url
+      };
+    })
+  }));
 
-  for (const tab of tabs) {
-    if (tab.pinned && !settings.groupPinnedTabs) continue;
-
-    const matchedCat = classifyTab(tab, categories, settings);
-    if (!matchedCat) continue;
-
-    if (!previewGroups.has(matchedCat.id)) {
-      previewGroups.set(matchedCat.id, {
-        category: matchedCat,
-        tabs: []
-      });
-    }
-    previewGroups.get(matchedCat.id).tabs.push({
-      id: tab.id,
-      title: tab.title || tab.url,
-      url: tab.url
-    });
-  }
-
-  const result = [];
-  for (const item of previewGroups.values()) {
-    result.push({
-      name: item.category.name,
-      color: item.category.color || 'grey',
-      count: item.tabs.length,
-      tabs: item.tabs
-    });
-  }
-
-  return { success: true, isPreview: true, previewGroups: result };
+  return {
+    success: true,
+    isPreview: true,
+    previewGroups,
+    skipped: plan.skipped,
+    contentClassification: summarizeContentClassification(content)
+  };
 }
 
 // Main Tab Grouping Logic
-async function organizeTabs(windowId = null) {
-  const { categories, settings } = await getStorageConfig();
-
+async function organizeTabs(windowId = null, {
+  respectPreviewMode = true,
+  confirmationToken = null,
+  requireConfirmation = false
+} = {}) {
   // If in Preview Mode, do dry-run
-  if (settings.previewMode) {
-    return await simulateOrganizeTabs(windowId);
+  if (respectPreviewMode) {
+    const initialConfig = await getStorageConfig();
+    if (initialConfig.settings.previewMode) return await simulateOrganizeTabs(windowId);
   }
 
-  const targetWindowId = windowId || (await chrome.windows.getCurrent()).id;
+  const targetWindowId = Number.isInteger(windowId) ? windowId : (await chrome.windows.getCurrent()).id;
+  if (organizeInFlight) {
+    return { success: false, message: 'すでに整理しています。' };
+  }
 
-  // Save state for UNDO before modifying
-  await saveUndoSnapshot(targetWindowId);
-
-  const tabs = await chrome.tabs.query({ windowId: targetWindowId });
-
-  const categoryMap = new Map();
-
-  for (const tab of tabs) {
-    if (tab.pinned && !settings.groupPinnedTabs) continue;
-
-    const matchedCat = classifyTab(tab, categories, settings);
-    if (!matchedCat) continue;
-
-    if (!categoryMap.has(matchedCat.id)) {
-      categoryMap.set(matchedCat.id, {
-        category: matchedCat,
-        tabIds: []
-      });
+  organizeInFlight = true;
+  let operationId = null;
+  let completedUndoData = null;
+  try {
+    await recoverStaleOperation(chrome);
+    const lease = await acquireOperationLease(chrome, {
+      windowId: targetWindowId,
+      type: 'organize'
+    });
+    if (!lease.acquired) {
+      return { success: false, message: 'すでに整理しています。' };
     }
-    categoryMap.get(matchedCat.id).tabIds.push(tab.id);
-  }
+    operationId = lease.operation.operationId;
 
-  const existingGroups = await chrome.tabGroups.query({ windowId: targetWindowId });
-  const existingGroupTitleMap = new Map();
-  for (const grp of existingGroups) {
-    existingGroupTitleMap.set(grp.title, grp.id);
-  }
+    const [{ categories, settings }, tabs, contentAccessGranted] = await Promise.all([
+      getStorageConfig(),
+      chrome.tabs.query({ windowId: targetWindowId }),
+      hasContentClassificationAccess(chrome)
+    ]);
+    if (respectPreviewMode && settings.previewMode) {
+      await releaseOperationLease(chrome, operationId);
+      operationId = null;
+      return await simulateOrganizeTabs(targetWindowId);
+    }
 
-  for (const [catId, item] of categoryMap.entries()) {
-    const { category, tabIds } = item;
-    if (!tabIds || tabIds.length === 0) continue;
+    const currentConfirmationToken = await createOrganizationPreviewToken({
+      windowId: targetWindowId,
+      tabs,
+      categories,
+      settings,
+      contentAccessGranted,
+      noneGroupId: chrome.tabGroups.TAB_GROUP_ID_NONE
+    });
+    if (
+      requireConfirmation
+      && !organizationPreviewTokensEqual(currentConfirmationToken, confirmationToken)
+    ) {
+      await releaseOperationLease(chrome, operationId);
+      operationId = null;
+      return {
+        success: false,
+        code: 'PREVIEW_STALE',
+        message: 'タブまたは分類設定が変わりました。最新の件数を確認してください。'
+      };
+    }
 
-    let groupId = existingGroupTitleMap.get(category.name);
-
-    try {
-      if (groupId) {
-        await chrome.tabs.group({ tabIds, groupId });
-      } else {
-        groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId: targetWindowId } });
-        await chrome.tabGroups.update(groupId, {
-          title: category.name,
-          color: category.color || "grey"
+    const effectiveSettings = requireConfirmation && !contentAccessGranted
+      ? { ...settings, contentClassificationEnabled: false }
+      : settings;
+    const confirmedTabStates = requireConfirmation
+      ? createConfirmedTabStates(tabs, chrome.tabGroups.TAB_GROUP_ID_NONE, {
+        categories,
+        settings: effectiveSettings
+      })
+      : null;
+    const content = await prepareContentClassifications({
+      chromeApi: chrome,
+      tabs,
+      categories,
+      settings: effectiveSettings
+    });
+    const result = await organizeTabsSafely({
+      chromeApi: chrome,
+      windowId: targetWindowId,
+      categories,
+      settings: effectiveSettings,
+      classify: createContentAssistedClassifier(content.classifications, effectiveSettings),
+      confirmedTabStates,
+      operationHooks: {
+        onPrepared: (prepared) => prepareOperationJournal(
+          chrome,
+          operationId,
+          prepared
+        ),
+        onBeforeMutation: (progress) => appendOperationProgress(
+          chrome,
+          operationId,
+          progress
+        ),
+        onProgress: (progress) => appendOperationProgress(
+          chrome,
+          operationId,
+          progress
+        )
+      }
+    });
+    const { undoData, ...publicResult } = result;
+    completedUndoData = undoData;
+    const undo = await completeUndoRecord(chrome, { operationId, undoData });
+    operationId = null;
+    return {
+      ...publicResult,
+      contentClassification: summarizeContentClassification(content),
+      undo
+    };
+  } catch (error) {
+    if (operationId && completedUndoData?.summary?.count > 0) {
+      const committed = await getUndoRecord(chrome, completedUndoData.windowId)
+        .then((record) => record?.operationId === operationId)
+        .catch(() => false);
+      if (!committed) {
+        await rollbackCompletedOperation(chrome, completedUndoData).catch((rollbackError) => {
+          console.error('Undo record failure rollback failed:', rollbackError);
         });
-        existingGroupTitleMap.set(category.name, groupId);
-      }
-    } catch (e) {
-      console.error(`Error grouping tabs for ${category.name}:`, e);
-    }
-  }
-
-  if (settings.collapseInactiveGroups) {
-    const activeTabs = await chrome.tabs.query({ active: true, windowId: targetWindowId });
-    const activeGroupId = activeTabs[0] ? activeTabs[0].groupId : -1;
-    const currentGroups = await chrome.tabGroups.query({ windowId: targetWindowId });
-    for (const g of currentGroups) {
-      if (g.id !== activeGroupId) {
-        await chrome.tabGroups.update(g.id, { collapsed: true });
       }
     }
+    if (operationId) await releaseOperationLease(chrome, operationId).catch(() => {});
+    throw error;
+  } finally {
+    organizeInFlight = false;
   }
-
-  return { success: true, count: tabs.length };
 }
 
-// Ungroup all
-async function ungroupAll(windowId = null) {
-  const targetWindowId = windowId || (await chrome.windows.getCurrent()).id;
-  await saveUndoSnapshot(targetWindowId);
-
-  const tabs = await chrome.tabs.query({ windowId: targetWindowId });
-  const groupedTabIds = tabs.filter(t => t.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE).map(t => t.id);
-  
-  if (groupedTabIds.length > 0) {
-    await chrome.tabs.ungroup(groupedTabIds);
-  }
-  return { success: true, ungroupedCount: groupedTabIds.length };
+function summarizeContentClassification(result) {
+  return {
+    status: result.status,
+    unresolved: result.unresolved,
+    attempted: result.attempted,
+    matched: result.classifications.size,
+    cacheHits: result.cacheHits
+  };
 }
 
-// Close duplicate tabs
-async function closeDuplicateTabs(windowId = null) {
-  const targetWindowId = windowId || (await chrome.windows.getCurrent()).id;
-  const tabs = await chrome.tabs.query({ windowId: targetWindowId });
-  const seenUrls = new Set();
-  const duplicateTabIds = [];
+chrome.windows.onRemoved.addListener((windowId) => {
+  // Undo is session/window scoped. Persistent ownership fingerprints stay in
+  // local storage so restored Chrome groups can be recognized after restart.
+  clearUndoForWindow(chrome, windowId)
+    .catch((error) => console.warn('Window state cleanup failed:', error));
+});
 
-  for (const tab of tabs) {
-    if (!tab.url) continue;
-    if (seenUrls.has(tab.url)) {
-      duplicateTabIds.push(tab.id);
-    } else {
-      seenUrls.add(tab.url);
+async function getPopupState(windowId = null) {
+  const targetWindowId = Number.isInteger(windowId) ? windowId : (await chrome.windows.getCurrent()).id;
+  const recovery = await recoverStaleOperation(chrome);
+  const [{ categories, settings }, tabs, undo, activeOperation, contentAccessGranted] = await Promise.all([
+    getStorageConfig(),
+    chrome.tabs.query({ windowId: targetWindowId }),
+    getUndoState(chrome, targetWindowId),
+    getActiveOperation(chrome),
+    hasContentClassificationAccess(chrome)
+  ]);
+  const noneGroupId = chrome.tabGroups.TAB_GROUP_ID_NONE;
+  const cheapSettings = { ...settings, groupUnmatchedAsOthers: settings.groupUnmatchedAsOthers === true };
+  const plan = buildSafeOrganizationPlan(tabs, categories, cheapSettings, { noneGroupId });
+  const targetTabIds = plan.items.flatMap((item) => item.tabIds);
+  const count = plan.items.reduce((sum, item) => sum + item.tabIds.length, 0);
+  const eligibleCount = tabs.filter((tab) => isEligibleForSafeOrganize(tab, noneGroupId)).length;
+  const unresolvedTabIds = tabs.filter((tab) =>
+    isEligibleForSafeOrganize(tab, noneGroupId)
+    && classifyTab(tab, categories, { ...settings, groupUnmatchedAsOthers: false }) === null
+  ).map((tab) => tab.id);
+  const unresolved = unresolvedTabIds.length;
+  const contentClassificationEnabled = settings.contentClassificationEnabled === true;
+  const contentClassificationAvailable = contentClassificationEnabled && contentAccessGranted;
+  const activeOperationForWindow = Boolean(
+    activeOperation
+    && activeOperation.windowId === targetWindowId
+    && Number(activeOperation.leaseExpiresAt) > Date.now()
+  );
+  const confirmationToken = await createOrganizationPreviewToken({
+    windowId: targetWindowId,
+    tabs,
+    categories,
+    settings,
+    contentAccessGranted,
+    noneGroupId
+  });
+
+  return {
+    success: true,
+    windowId: targetWindowId,
+    undo,
+    inProgress: activeOperationForWindow,
+    operationType: activeOperationForWindow ? activeOperation.type || 'organize' : null,
+    recovery: recovery.recovered && recovery.windowId === targetWindowId ? recovery : null,
+    preview: {
+      count,
+      groupCount: plan.items.length,
+      targetTabIds,
+      eligibleCount,
+      unresolvedTabIds,
+      unresolved,
+      contentClassificationEnabled,
+      contentClassificationAvailable,
+      contentLimitExceeded: contentClassificationAvailable && unresolved > 30,
+      confirmationToken
+    },
+    categories: categories
+      .filter((category) => category.enabled !== false)
+      .map((category) => ({
+        id: category.id,
+        name: category.name,
+        color: category.color || 'grey'
+      }))
+  };
+}
+
+async function undoCurrentWindow(windowId = null, expectedOperationId = null) {
+  const targetWindowId = Number.isInteger(windowId) ? windowId : (await chrome.windows.getCurrent()).id;
+  if (organizeInFlight) return { success: false, message: '別の操作を実行しています。' };
+
+  organizeInFlight = true;
+  let operationId = null;
+  try {
+    await recoverStaleOperation(chrome);
+    const lease = await acquireOperationLease(chrome, {
+      windowId: targetWindowId,
+      type: 'undo'
+    });
+    if (!lease.acquired) return { success: false, message: '別の操作を実行しています。' };
+    operationId = lease.operation.operationId;
+    const result = await undoLastOperation(
+      chrome,
+      targetWindowId,
+      () => Date.now(),
+      expectedOperationId
+    );
+    await releaseOperationLease(chrome, operationId);
+    operationId = null;
+    return result;
+  } finally {
+    if (operationId) await releaseOperationLease(chrome, operationId).catch(() => {});
+    organizeInFlight = false;
+  }
+}
+
+async function correctCurrentClassification(message) {
+  const targetWindowId = Number.isInteger(message.windowId)
+    ? message.windowId
+    : (await chrome.windows.getCurrent()).id;
+  if (organizeInFlight) return { success: false, message: '別の操作を実行しています。' };
+
+  organizeInFlight = true;
+  let leaseOperationId = null;
+  try {
+    await recoverStaleOperation(chrome);
+    const lease = await acquireOperationLease(chrome, {
+      windowId: targetWindowId,
+      type: 'correction'
+    });
+    if (!lease.acquired) return { success: false, message: '別の操作を実行しています。' };
+    leaseOperationId = lease.operation.operationId;
+    const { categories } = await getStorageConfig();
+    const result = await correctTabClassification({
+      chromeApi: chrome,
+      windowId: targetWindowId,
+      operationId: message.operationId,
+      tabId: message.tabId,
+      targetCategoryId: message.targetCategoryId,
+      categories
+    });
+    await releaseOperationLease(chrome, leaseOperationId);
+    leaseOperationId = null;
+    return result;
+  } finally {
+    if (leaseOperationId) await releaseOperationLease(chrome, leaseOperationId).catch(() => {});
+    organizeInFlight = false;
+  }
+}
+
+async function previewSelectedGroupReorganization(message) {
+  const targetWindowId = Number.isInteger(message.windowId)
+    ? message.windowId
+    : (await chrome.windows.getCurrent()).id;
+  if (!Number.isInteger(message.groupId)) {
+    return { success: false, message: '再構成するグループを確認できませんでした。' };
+  }
+  if (organizeInFlight) return { success: false, message: '別の操作を実行しています。' };
+
+  await recoverStaleOperation(chrome);
+  const activeOperation = await getActiveOperation(chrome);
+  if (
+    activeOperation
+    && Number(activeOperation.leaseExpiresAt) > Date.now()
+  ) return { success: false, message: '別の操作を実行しています。' };
+
+  const { categories, settings } = await getStorageConfig();
+  const { classify, content } = await createGroupContentClassifier({
+    windowId: targetWindowId,
+    groupId: message.groupId,
+    categories,
+    settings
+  });
+  const plan = await prepareGroupReorganization({
+    chromeApi: chrome,
+    windowId: targetWindowId,
+    sourceGroupId: message.groupId,
+    categories,
+    settings,
+    classify
+  });
+
+  return {
+    success: true,
+    windowId: targetWindowId,
+    groupId: plan.sourceGroup.id,
+    title: plan.sourceGroup.title || '名称なし',
+    color: plan.sourceGroup.color,
+    totalCount: plan.totalCount,
+    retainedCount: plan.retainedCount,
+    movedCount: plan.movedCount,
+    targetGroupCount: plan.targetGroupCount,
+    newGroupCount: plan.newGroupCount,
+    blockedCount: plan.blockedCount,
+    targets: plan.items.map((item) => ({
+      categoryId: item.category.id,
+      name: item.category.name,
+      color: item.category.color,
+      count: item.tabIds.length,
+      reusesManagedGroup: Number.isInteger(item.targetGroupId)
+    })),
+    fingerprint: plan.fingerprint,
+    contentClassification: summarizeContentClassification(content)
+  };
+}
+
+async function reorganizeSelectedGroup(message) {
+  const targetWindowId = Number.isInteger(message.windowId)
+    ? message.windowId
+    : (await chrome.windows.getCurrent()).id;
+  if (!Number.isInteger(message.groupId) || !message.expectedFingerprint) {
+    return { success: false, message: '再構成の確認情報がありません。もう一度確認してください。' };
+  }
+  if (organizeInFlight) return { success: false, message: '別の操作を実行しています。' };
+
+  organizeInFlight = true;
+  let operationId = null;
+  let completedUndoData = null;
+  try {
+    await recoverStaleOperation(chrome);
+    const lease = await acquireOperationLease(chrome, {
+      windowId: targetWindowId,
+      type: 'reorganize-group'
+    });
+    if (!lease.acquired) return { success: false, message: '別の操作を実行しています。' };
+    operationId = lease.operation.operationId;
+
+    const { categories, settings } = await getStorageConfig();
+    const { classify, content } = await createGroupContentClassifier({
+      windowId: targetWindowId,
+      groupId: message.groupId,
+      categories,
+      settings
+    });
+    const result = await reorganizeGroupSafely({
+      chromeApi: chrome,
+      windowId: targetWindowId,
+      sourceGroupId: message.groupId,
+      expectedFingerprint: message.expectedFingerprint,
+      categories,
+      settings,
+      classify,
+      operationHooks: {
+        onPrepared: (prepared) => prepareOperationJournal(chrome, operationId, prepared),
+        onBeforeMutation: (progress) => appendOperationProgress(chrome, operationId, progress),
+        onProgress: (progress) => appendOperationProgress(chrome, operationId, progress)
+      }
+    });
+    const { undoData, ...publicResult } = result;
+    completedUndoData = undoData;
+    const undo = await completeUndoRecord(chrome, { operationId, undoData });
+    operationId = null;
+    return {
+      ...publicResult,
+      contentClassification: summarizeContentClassification(content),
+      undo
+    };
+  } catch (error) {
+    if (operationId && completedUndoData?.summary?.count > 0) {
+      const committed = await getUndoRecord(chrome, completedUndoData.windowId)
+        .then((record) => record?.operationId === operationId)
+        .catch(() => false);
+      if (!committed) {
+        await rollbackCompletedOperation(chrome, completedUndoData).catch((rollbackError) => {
+          console.error('Group reorganization undo record rollback failed:', rollbackError);
+        });
+      }
     }
+    if (operationId) await releaseOperationLease(chrome, operationId).catch(() => {});
+    throw error;
+  } finally {
+    organizeInFlight = false;
   }
+}
 
-  if (duplicateTabIds.length > 0) {
-    await chrome.tabs.remove(duplicateTabIds);
+async function createGroupContentClassifier({ windowId, groupId, categories, settings }) {
+  const tabs = await chrome.tabs.query({ windowId });
+  const noneGroupId = chrome.tabGroups.TAB_GROUP_ID_NONE;
+  const contentTabs = tabs
+    .filter((tab) => tab.groupId === groupId)
+    .map((tab) => ({ ...tab, groupId: noneGroupId }));
+  const content = await prepareContentClassifications({
+    chromeApi: chrome,
+    tabs: contentTabs,
+    categories,
+    settings
+  });
+  return {
+    content,
+    classify: createContentAssistedClassifier(content.classifications, settings)
+  };
+}
+
+async function editSelectedGroup(message) {
+  const targetWindowId = Number.isInteger(message.windowId)
+    ? message.windowId
+    : (await chrome.windows.getCurrent()).id;
+  if (!Number.isInteger(message.groupId) || !message.expectedFingerprint) {
+    return { success: false, message: 'グループ編集の開始状態を確認できませんでした。' };
   }
-  return { success: true, removedCount: duplicateTabIds.length };
+  if (organizeInFlight) return { success: false, message: '別の操作を実行しています。' };
+
+  organizeInFlight = true;
+  let operationId = null;
+  let completedUndoData = null;
+  try {
+    await recoverStaleOperation(chrome);
+    const lease = await acquireOperationLease(chrome, {
+      windowId: targetWindowId,
+      type: 'group-edit'
+    });
+    if (!lease.acquired) return { success: false, message: '別の操作を実行しています。' };
+    operationId = lease.operation.operationId;
+
+    const result = await editGroupSafely({
+      chromeApi: chrome,
+      windowId: targetWindowId,
+      groupId: message.groupId,
+      expectedFingerprint: message.expectedFingerprint,
+      changes: message.changes,
+      operationHooks: {
+        onPrepared: (prepared) => prepareOperationJournal(chrome, operationId, prepared),
+        onBeforeMutation: (progress) => appendOperationProgress(chrome, operationId, progress)
+      }
+    });
+    const { undoData, ...publicResult } = result;
+    completedUndoData = undoData;
+    const undo = await completeUndoRecord(chrome, { operationId, undoData });
+    operationId = null;
+    return { ...publicResult, undo };
+  } catch (error) {
+    if (operationId && completedUndoData?.summary?.count > 0) {
+      const committed = await getUndoRecord(chrome, completedUndoData.windowId)
+        .then((record) => record?.operationId === operationId)
+        .catch(() => false);
+      if (!committed) {
+        await rollbackCompletedOperation(chrome, completedUndoData).catch((rollbackError) => {
+          console.error('Group edit undo record rollback failed:', rollbackError);
+        });
+      }
+    }
+    if (operationId) await releaseOperationLease(chrome, operationId).catch(() => {});
+    throw error;
+  } finally {
+    organizeInFlight = false;
+  }
 }
 
 // Add domain to exclusion list
@@ -226,65 +646,92 @@ async function addExclusion(domainOrUrl) {
   return { success: true, exclusions };
 }
 
-// Real-time tab update listener
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && tab.url) {
-    const { settings, categories } = await getStorageConfig();
-    if (!settings.autoGroupOnUpdate || settings.previewMode) return;
-    if (tab.pinned && !settings.groupPinnedTabs) return;
-
-    const matchedCat = classifyTab(tab, categories, settings);
-    if (matchedCat) {
-      const existingGroups = await chrome.tabGroups.query({ windowId: tab.windowId });
-      let existingGroup = existingGroups.find(g => g.title === matchedCat.name);
-      
-      try {
-        if (existingGroup) {
-          await chrome.tabs.group({ tabIds: [tabId], groupId: existingGroup.id });
-        } else {
-          const groupId = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId: tab.windowId } });
-          await chrome.tabGroups.update(groupId, {
-            title: matchedCat.name,
-            color: matchedCat.color || "grey"
-          });
-        }
-      } catch (e) {
-        console.error("Auto group error:", e);
-      }
-    }
-  }
-});
-
 // Message listener for popup & options communication
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'BEGIN_CONTENT_ACCESS_DRAFT') {
+    const tabId = getOptionsSenderTabId(message, sender);
+    if (!Number.isInteger(tabId)) {
+      sendResponse({ success: false });
+      return false;
+    }
+    beginContentAccessDraft(chrome, tabId, OPTIONS_PAGE_URL)
+      .then((result) => sendResponse({ success: result.tracked === true }))
+      .catch(() => sendResponse({ success: false }));
+    return true;
+  }
+  if (message.action === 'COMMIT_CONTENT_ACCESS_DRAFT') {
+    const tabId = getOptionsSenderTabId(message, sender);
+    if (!Number.isInteger(tabId)) {
+      sendResponse({ success: false });
+      return false;
+    }
+    commitContentAccessDraft(chrome, tabId)
+      .then(() => sendResponse({ success: true }))
+      .catch(() => sendResponse({ success: false }));
+    return true;
+  }
   if (message.action === "ORGANIZE_CURRENT_WINDOW") {
-    organizeTabs().then(res => sendResponse(res));
+    organizeTabs(message.windowId).then(res => sendResponse(res));
+    return true;
+  }
+  if (message.action === "ORGANIZE_CURRENT_WINDOW_CONFIRMED") {
+    organizeTabs(message.windowId, {
+      respectPreviewMode: false,
+      confirmationToken: message.confirmationToken,
+      requireConfirmation: true
+    })
+      .then(res => sendResponse(res))
+      .catch(error => {
+        console.error("Confirmed organize error:", error);
+        sendResponse({
+          success: false,
+          message: error?.message || "整理できませんでした。"
+        });
+      });
     return true;
   }
   if (message.action === "SIMULATE_ORGANIZE") {
     simulateOrganizeTabs().then(res => sendResponse(res));
     return true;
   }
+  if (message.action === "GET_POPUP_STATE") {
+    getPopupState(message.windowId)
+      .then(res => sendResponse(res))
+      .catch(error => sendResponse({ success: false, message: error?.message || '状態を確認できませんでした。' }));
+    return true;
+  }
   if (message.action === "UNDO_LAST_ACTION") {
-    restoreUndoSnapshot().then(res => sendResponse(res));
+    undoCurrentWindow(message.windowId, message.operationId)
+      .then(res => sendResponse(res))
+      .catch(error => sendResponse({ success: false, message: error?.message || '元に戻せませんでした。' }));
+    return true;
+  }
+  if (message.action === "CORRECT_CLASSIFICATION") {
+    correctCurrentClassification(message)
+      .then(res => sendResponse(res))
+      .catch(error => sendResponse({ success: false, message: error?.message || '分類を修正できませんでした。' }));
+    return true;
+  }
+  if (message.action === "PREVIEW_SELECTED_GROUP_REORGANIZATION") {
+    previewSelectedGroupReorganization(message)
+      .then(res => sendResponse(res))
+      .catch(error => sendResponse({ success: false, message: error?.message || '再構成案を確認できませんでした。' }));
+    return true;
+  }
+  if (message.action === "REORGANIZE_SELECTED_GROUP_CONFIRMED") {
+    reorganizeSelectedGroup(message)
+      .then(res => sendResponse(res))
+      .catch(error => sendResponse({ success: false, message: error?.message || 'グループを再構成できませんでした。' }));
+    return true;
+  }
+  if (message.action === "EDIT_SELECTED_GROUP_CONFIRMED") {
+    editSelectedGroup(message)
+      .then(res => sendResponse(res))
+      .catch(error => sendResponse({ success: false, message: error?.message || 'グループを編集できませんでした。' }));
     return true;
   }
   if (message.action === "ADD_EXCLUSION") {
     addExclusion(message.domain).then(res => sendResponse(res));
-    return true;
-  }
-  if (message.action === "UNGROUP_ALL") {
-    ungroupAll().then(res => sendResponse(res));
-    return true;
-  }
-  if (message.action === "CLOSE_DUPLICATES") {
-    closeDuplicateTabs().then(res => sendResponse(res));
-    return true;
-  }
-  if (message.action === "RESET_TO_DEFAULT") {
-    chrome.storage.sync.set({ categories: DEFAULT_CATEGORIES, settings: DEFAULT_SETTINGS }, () => {
-      sendResponse({ success: true });
-    });
     return true;
   }
 });

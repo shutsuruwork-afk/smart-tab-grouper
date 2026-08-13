@@ -34,7 +34,7 @@ export function classifyTab(tab, categories, settings = {}) {
   // 0. Exclusion / Blacklist Check (誤検知・除外リスト)
   if (settings.exclusions && Array.isArray(settings.exclusions)) {
     const isExcluded = settings.exclusions.some(item => {
-      const clean = item.trim().toLowerCase();
+      const clean = String(item ?? '').trim().toLowerCase();
       if (!clean) return false;
       return hostname === clean || hostname.endsWith("." + clean) || urlString.toLowerCase().includes(clean);
     });
@@ -43,22 +43,13 @@ export function classifyTab(tab, categories, settings = {}) {
     }
   }
 
-  const activeCategories = categories.filter(c => c.enabled);
+  const activeCategories = (Array.isArray(categories) ? categories : [])
+    .filter((category) => category?.enabled !== false);
 
-  // 1. PRIORITY 1: Domain Exact/Subdomain Matching (登録済みドメイン最優先)
-  // This prevents title keyword false positives from misclassifying known domains!
-  for (const cat of activeCategories) {
-    if (cat.domains && Array.isArray(cat.domains)) {
-      const domainMatch = cat.domains.some(d => {
-        const cleanDomain = d.trim().toLowerCase();
-        if (!cleanDomain) return false;
-        return hostname === cleanDomain || hostname.endsWith("." + cleanDomain);
-      });
-      if (domainMatch) {
-        return cat;
-      }
-    }
-  }
+  // 1. PRIORITY 1: Longest registered domain match.
+  // A specific rule such as mail.google.com wins over google.com.
+  const domainMatch = findLongestDomainMatch(hostname, activeCategories);
+  if (domainMatch) return domainMatch.category;
 
   // 2. PRIORITY 2: Custom Regex Matching
   for (const cat of activeCategories) {
@@ -92,20 +83,34 @@ export function classifyTab(tab, categories, settings = {}) {
     }
   }
 
-  // 4. PRIORITY 4: Domain Fallback
-  if (settings.groupByDomainAsFallback) {
-    const domainParts = hostname.split(".");
-    let displayDomain = hostname;
-    if (domainParts.length >= 2) {
-      displayDomain = domainParts.slice(-2).join(".");
-    }
+  // 4. OPTIONAL: Put every unmatched tab into one neutral group.
+  // The default is off, so an unmatched tab is left exactly where it is.
+  if (settings.groupUnmatchedAsOthers === true) {
     return {
-      id: `cat_fallback_${displayDomain}`,
-      name: `🌐 ${displayDomain}`,
+      id: "cat_others",
+      name: "Others",
       color: "grey",
       isFallback: true
     };
   }
 
   return null;
+}
+
+export function findLongestDomainMatch(hostname, categories) {
+  let best = null;
+  const source = Array.isArray(categories) ? categories : [];
+  for (let categoryIndex = 0; categoryIndex < source.length; categoryIndex += 1) {
+    const category = source[categoryIndex];
+    if (!Array.isArray(category.domains)) continue;
+    for (const rawDomain of category.domains) {
+      const domain = String(rawDomain || '').trim().toLowerCase().replace(/^\*\./, '');
+      if (!domain) continue;
+      if (hostname !== domain && !hostname.endsWith(`.${domain}`)) continue;
+      if (!best || domain.length > best.domain.length) {
+        best = { category, domain, categoryIndex };
+      }
+    }
+  }
+  return best;
 }

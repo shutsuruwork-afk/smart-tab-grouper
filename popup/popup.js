@@ -1,188 +1,903 @@
-// Popup Script for Smart Tab Grouper v1.1.0
+const preview = createPreviewAdapter();
+let activeUiTheme = preview?.uiTheme || cloneThemeConfig(SmartTabTheme.DEFAULT_CONFIG);
+let currentWindowId = null;
+let undoAvailable = false;
+let currentUndoOperationId = null;
+let currentUndoExpiresAt = null;
+let availableCategories = [];
+let currentConfirmationToken = null;
+let completionExpiryTimer = null;
+let completionActionHadFocus = false;
+let openCorrectionMenu = null;
+const progressPoller = SmartTabSerialPoller.create({
+  load: safeReloadPopupState,
+  onValue: (state) => {
+    if (state && !state.inProgress) renderPopupState(state);
+  },
+  shouldContinue: (state) => !state || state.inProgress === true,
+  interval: 500
+});
 
-document.addEventListener('DOMContentLoaded', async () => {
-  const btnOrganize = document.getElementById('btnOrganize');
-  const btnUndo = document.getElementById('btnUndo');
-  const btnExcludeCurrent = document.getElementById('btnExcludeCurrent');
-  const btnRemoveDuplicates = document.getElementById('btnRemoveDuplicates');
-  const btnUngroup = document.getElementById('btnUngroup');
-  const btnOptions = document.getElementById('btnOptions');
-  const chkAutoGroup = document.getElementById('chkAutoGroup');
-  const chkPreviewMode = document.getElementById('chkPreviewMode');
-  const lblOrganizeBtn = document.getElementById('lblOrganizeBtn');
-  const listSectionTitle = document.getElementById('listSectionTitle');
-  const groupList = document.getElementById('groupList');
-  const statTabCount = document.getElementById('statTabCount');
-  const statGroupCount = document.getElementById('statGroupCount');
-  const statusToast = document.getElementById('statusToast');
+const themeReady = initializeTheme();
 
-  function showToast(msg) {
-    statusToast.textContent = msg;
-    statusToast.style.opacity = '1';
-    setTimeout(() => {
-      statusToast.style.opacity = '0';
-    }, 2500);
+document.addEventListener('DOMContentLoaded', initialize);
+
+async function initialize() {
+  await themeReady;
+  bindStaticActions();
+  observePreviewSize();
+
+  try {
+    currentWindowId = await resolveCurrentWindowId();
+    const state = await sendAction({
+      action: 'GET_POPUP_STATE',
+      windowId: currentWindowId
+    });
+    if (!state?.success) throw new Error(state?.message || '状態を確認できませんでした。');
+    renderPopupState(state);
+  } catch (error) {
+    renderConfirmation({ count: null, groupCount: 0, unresolved: 0 });
+    setStatus('confirmationStatus', error?.message || '状態を確認できませんでした。', 'error');
+  }
+}
+
+function bindStaticActions() {
+  const undoShortcut = SmartTabKeyboardShortcuts.getUndoShortcut();
+  const undoButton = document.getElementById('btnUndo');
+  undoButton.title = `ショートカット: ${undoShortcut.compact}`;
+  undoButton.setAttribute('aria-keyshortcuts', undoShortcut.ariaKeyShortcuts);
+  document.getElementById('btnCancel').addEventListener('click', () => closePopup('cancel'));
+  document.getElementById('btnClose').addEventListener('click', () => closePopup('success'));
+  document.getElementById('btnConfirm').addEventListener('click', organizeCurrentWindow);
+  document.getElementById('btnUndo').addEventListener('click', undoLastAction);
+  for (const button of document.querySelectorAll('.settings-link')) {
+    button.addEventListener('click', openSettings);
+  }
+  document.addEventListener('click', closeCorrectionMenuFromOutside);
+  document.addEventListener('keydown', handleUndoShortcut);
+}
+
+function renderPopupState(state) {
+  if (Array.isArray(state.categories)) availableCategories = state.categories;
+  if (state.inProgress) {
+    renderProgress(state.operationType);
+    startProgressPolling();
+    return;
+  }
+  if (state.undo?.available) {
+    renderCompletion(state.undo);
+    return;
+  }
+  renderConfirmation(state.preview, state.recovery);
+}
+
+function renderConfirmation(previewState = {}, recovery = null) {
+  stopProgressPolling();
+  clearCompletionExpiryTimer();
+  showOnly('confirmationView');
+  undoAvailable = false;
+  currentUndoOperationId = null;
+  currentUndoExpiresAt = null;
+  completionActionHadFocus = false;
+  const title = document.getElementById('confirmationTitle');
+  const description = document.getElementById('confirmationDescription');
+  const confirmButton = document.getElementById('btnConfirm');
+  const count = Number.isInteger(previewState.count) ? previewState.count : null;
+  const groups = Number.isInteger(previewState.groupCount) ? previewState.groupCount : 0;
+  const unresolved = Number.isInteger(previewState.unresolved) ? previewState.unresolved : 0;
+  const hasContentCandidates = previewState.contentClassificationEnabled && unresolved > 0;
+  const contentAvailable = previewState.contentClassificationAvailable !== false;
+  const contentMayAdd = hasContentCandidates && contentAvailable && !previewState.contentLimitExceeded;
+  currentConfirmationToken = previewState.confirmationToken || null;
+  confirmButton.textContent = '整理';
+
+  if (count === null) {
+    title.textContent = '状態を確認できませんでした';
+    description.textContent = 'タブの件数をもう一度確認してください。';
+    confirmButton.textContent = '再確認';
+    confirmButton.disabled = false;
+  } else if (count === 0 && !contentMayAdd) {
+    title.textContent = hasContentCandidates && (!contentAvailable || previewState.contentLimitExceeded)
+      ? '補助分類を実行できません'
+      : '整理できるタブはありません';
+    description.textContent = hasContentCandidates && !contentAvailable
+      ? 'サイトアクセスが解除されています。設定で未登録サイトの自動分類をオンにし直してください。'
+      : hasContentCandidates && previewState.contentLimitExceeded
+        ? '補助分類の候補が30件を超え、登録済みルールに一致するタブもありません。'
+        : '未整理のタブに、登録済みルールと一致するものはありません。';
+    confirmButton.disabled = true;
+  } else {
+    title.textContent = `${count}件のタブを整理しますか？`;
+    const groupText = groups > 0 ? `${groups}グループへ整理する予定です。` : '';
+    const assistText = hasContentCandidates
+      ? !contentAvailable
+        ? '補助分類はサイトアクセスがないため使用しません。'
+        : previewState.contentLimitExceeded
+          ? '補助分類は候補が30件を超えたため使用しません。'
+          : '補助分類の結果で対象が増える場合があります。'
+      : '';
+    description.textContent = [groupText, assistText].filter(Boolean).join(' ')
+      || '補助分類で対象を確認します。';
+    confirmButton.disabled = false;
   }
 
-  // Load and refresh state
-  async function refreshUI() {
-    const data = await chrome.storage.sync.get(['settings']);
-    const settings = data.settings || {};
-    
-    chkAutoGroup.checked = !!settings.autoGroupOnUpdate;
-    chkPreviewMode.checked = !!settings.previewMode;
+  setStatus(
+    'confirmationStatus',
+    recovery?.recovered ? '中断されていた前回の整理を安全に戻しました。' : '',
+    recovery?.errors?.length ? 'error' : null
+  );
+  document.getElementById('btnCancel').focus({ preventScroll: true });
+}
 
-    if (settings.previewMode) {
-      lblOrganizeBtn.textContent = "🧪 テストシミュレーション実行";
-      btnOrganize.classList.add('preview-active');
-      listSectionTitle.textContent = "🧪 プレビュー分類シミュレーション結果";
-    } else {
-      lblOrganizeBtn.textContent = "✨ 今すぐタブを一括整理";
-      btnOrganize.classList.remove('preview-active');
-      listSectionTitle.textContent = "現在のグループ一覧";
+function renderProgress(operationType = 'organize') {
+  stopProgressPolling();
+  clearCompletionExpiryTimer();
+  showOnly('progressView');
+  undoAvailable = false;
+  currentUndoExpiresAt = null;
+  completionActionHadFocus = false;
+  const content = {
+    undo: ['元に戻しています…', '直前の状態を安全に復元しています。'],
+    correction: ['分類を修正しています…', 'タブの移動とドメイン登録を反映しています。'],
+    reorganize: ['再構成しています…', '選択したグループを安全に分け直しています。'],
+    edit: ['グループを変更しています…', '表示とUndo記録を反映しています。']
+  }[operationType] || ['整理しています…', 'このまま少しお待ちください。'];
+  document.getElementById('progressTitle').textContent = content[0];
+  document.getElementById('progressDescription').textContent = content[1];
+}
+
+function renderCompletion(undoState, fallbackMessage = '') {
+  stopProgressPolling();
+  clearCompletionExpiryTimer();
+  showOnly('completionView');
+  currentConfirmationToken = null;
+  const summary = undoState?.summary || { count: 0, groups: [] };
+  const count = Number(summary.count) || 0;
+  const groups = Array.isArray(summary.groups) ? summary.groups : [];
+  const isGroupEdit = summary.kind === 'group-edit';
+  undoAvailable = undoState?.available === true;
+  currentUndoOperationId = undoState?.operationId || null;
+  currentUndoExpiresAt = undoState?.expiresAt ?? null;
+  completionActionHadFocus = false;
+
+  document.getElementById('completionTitle').textContent = isGroupEdit
+    ? 'グループを変更しました'
+    : count > 0
+      ? '整理しました'
+      : '整理する新しいタブはありません';
+  document.getElementById('completionDescription').textContent = isGroupEdit
+    ? summary.message || 'グループの表示を変更しました。'
+    : count > 0
+      ? `${count}件を${groups.length}グループへ整理しました。`
+      : fallbackMessage || '現在の状態は変更していません。';
+  renderCompletionGroups(groups);
+  document.getElementById('btnUndo').hidden = !undoAvailable;
+  document.getElementById('btnUndo').disabled = false;
+  setStatus('completionStatus', '', null);
+  scheduleCompletionExpiry(undoState);
+  document.getElementById('btnClose').focus({ preventScroll: true });
+}
+
+function scheduleCompletionExpiry(undoState) {
+  clearCompletionExpiryTimer();
+  if (!undoState?.available) return;
+  const delay = SmartTabActionExpiry.getDelay(undoState.expiresAt);
+  if (delay === null) return;
+  completionExpiryTimer = setTimeout(expireCompletionActions, delay);
+}
+
+function clearCompletionExpiryTimer() {
+  clearTimeout(completionExpiryTimer);
+  completionExpiryTimer = null;
+}
+
+function expireCompletionActions({ force = false } = {}) {
+  completionExpiryTimer = null;
+  if (document.getElementById('completionView').hidden || (!force && !undoAvailable)) return;
+  const focusedElement = document.activeElement;
+  const actionHadFocus = focusedElement instanceof Element
+    && Boolean(focusedElement.closest('#btnUndo, .correction-trigger, .correction-choice'))
+    || completionActionHadFocus;
+  undoAvailable = false;
+  currentUndoOperationId = null;
+  currentUndoExpiresAt = null;
+  completionActionHadFocus = false;
+  closeOpenCorrectionMenu();
+  const undoButton = document.getElementById('btnUndo');
+  undoButton.hidden = true;
+  undoButton.disabled = true;
+  for (const button of document.querySelectorAll('.correction-trigger, .correction-choice')) {
+    button.disabled = true;
+    if (button.classList.contains('correction-trigger')) button.hidden = true;
+  }
+  setStatus('completionStatus', '元に戻す・分類修正の有効時間が終了しました。', null);
+  if (actionHadFocus) document.getElementById('btnClose').focus({ preventScroll: true });
+}
+
+function renderCompletionGroups(groups) {
+  const container = document.getElementById('completionGroups');
+  openCorrectionMenu = null;
+  container.replaceChildren();
+  container.hidden = groups.length === 0;
+  for (const group of groups) {
+    const block = document.createElement('details');
+    block.className = 'completion-group';
+    const row = document.createElement('summary');
+    row.className = 'completion-group-summary';
+
+    const dot = document.createElement('span');
+    dot.className = `group-dot group-dot-${group.color || 'grey'}`;
+    dot.setAttribute('aria-hidden', 'true');
+
+    const name = document.createElement('span');
+    name.className = 'completion-group-name';
+    name.textContent = group.name || 'グループ';
+
+    const count = document.createElement('span');
+    count.className = 'completion-group-count';
+    count.textContent = `${Number(group.count) || group.tabs?.length || 0}件`;
+
+    const chevron = document.createElement('span');
+    chevron.className = 'completion-group-chevron';
+    chevron.textContent = '›';
+    chevron.setAttribute('aria-hidden', 'true');
+
+    row.append(dot, name, count, chevron);
+    block.append(row);
+
+    if (Array.isArray(group.tabs) && group.tabs.length > 0) {
+      const tabs = document.createElement('div');
+      tabs.className = 'completion-tabs';
+      for (const tab of group.tabs) {
+        const tabRow = document.createElement('div');
+        tabRow.className = 'completion-tab';
+
+        const tabCopy = document.createElement('span');
+        tabCopy.className = 'completion-tab-copy';
+        const title = document.createElement('span');
+        title.className = 'completion-tab-title';
+        title.textContent = tab.title || '無題のタブ';
+        const host = document.createElement('small');
+        host.textContent = getHostname(tab.url);
+        tabCopy.append(title, host);
+        tabRow.append(tabCopy);
+
+        const alternatives = availableCategories.filter((item) => item.id !== group.categoryId);
+        if (alternatives.length > 0) {
+          const correct = document.createElement('button');
+          correct.type = 'button';
+          correct.className = 'correction-trigger';
+          correct.textContent = '修正';
+          correct.setAttribute('aria-label', `${tab.title || 'このタブ'}の分類を修正`);
+          correct.setAttribute('aria-expanded', 'false');
+          correct.setAttribute('aria-haspopup', 'menu');
+
+          const choices = document.createElement('div');
+          choices.id = `correction-menu-${tab.tabId}`;
+          choices.className = 'correction-choices';
+          choices.hidden = true;
+          choices.setAttribute('role', 'menu');
+          choices.setAttribute('aria-label', `${tab.title || 'このタブ'}の移動先`);
+          correct.setAttribute('aria-controls', choices.id);
+          for (const category of alternatives) {
+            const choice = document.createElement('button');
+            choice.type = 'button';
+            choice.className = 'correction-choice';
+            choice.setAttribute('role', 'menuitem');
+            choice.tabIndex = -1;
+            choice.textContent = category.name;
+            choice.addEventListener('click', () => applyCorrection(tab.tabId, category.id));
+            choices.append(choice);
+          }
+          correct.addEventListener('click', () => toggleCorrectionMenu(correct, choices));
+          choices.addEventListener('keydown', (event) => handleCorrectionMenuKeydown(
+            event,
+            correct,
+            choices
+          ));
+          choices.addEventListener('focusout', (event) => {
+            const next = event.relatedTarget;
+            if (next !== correct && !(next instanceof Node && choices.contains(next))) {
+              closeOpenCorrectionMenu();
+            }
+          });
+          tabRow.append(correct, choices);
+        }
+        tabs.append(tabRow);
+      }
+      block.append(tabs);
     }
+    container.append(block);
+  }
+}
 
-    const tabs = await chrome.tabs.query({ currentWindow: true });
+function toggleCorrectionMenu(trigger, menu) {
+  const willOpen = menu.hidden;
+  closeOpenCorrectionMenu();
+  if (!willOpen) return;
 
-    if (settings.previewMode) {
-      // Execute dry-run preview simulation
-      chrome.runtime.sendMessage({ action: "SIMULATE_ORGANIZE" }, (res) => {
-        if (!res || !res.previewGroups) return;
-        statTabCount.textContent = tabs.length;
-        statGroupCount.textContent = `${res.previewGroups.length} (予想)`;
-        renderGroupItems(res.previewGroups.map(g => ({
-          title: g.name,
-          color: g.color,
-          tabCount: g.count,
-          previewText: g.tabs.map(t => t.title).slice(0, 3).join(" • ")
-        })));
-      });
-    } else {
-      const groups = await chrome.tabGroups.query({ currentWindow: true });
-      statTabCount.textContent = tabs.length;
-      statGroupCount.textContent = groups.length;
+  menu.hidden = false;
+  trigger.setAttribute('aria-expanded', 'true');
+  openCorrectionMenu = { trigger, menu };
+  const firstChoice = menu.querySelector('.correction-choice');
+  if (firstChoice) {
+    firstChoice.tabIndex = 0;
+    firstChoice.focus({ preventScroll: true });
+  }
+}
 
-      const groupData = groups.map(group => {
-        const groupTabs = tabs.filter(t => t.groupId === group.id);
-        return {
-          title: group.title || '無題グループ',
-          color: group.color || 'grey',
-          tabCount: groupTabs.length,
-          previewText: groupTabs.map(t => t.title).slice(0, 3).join(" • ")
-        };
-      });
-      renderGroupItems(groupData);
-    }
+function closeOpenCorrectionMenu({ restoreFocus = false } = {}) {
+  if (!openCorrectionMenu) return;
+  const { trigger, menu } = openCorrectionMenu;
+  menu.hidden = true;
+  for (const choice of menu.querySelectorAll('.correction-choice')) choice.tabIndex = -1;
+  trigger.setAttribute('aria-expanded', 'false');
+  openCorrectionMenu = null;
+  if (restoreFocus) trigger.focus({ preventScroll: true });
+}
+
+function closeCorrectionMenuFromOutside(event) {
+  if (!openCorrectionMenu) return;
+  const target = event.target;
+  if (target instanceof Element && target.closest('.correction-trigger, .correction-choices')) return;
+  closeOpenCorrectionMenu();
+}
+
+function handleCorrectionMenuKeydown(event, trigger, menu) {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeOpenCorrectionMenu({ restoreFocus: true });
+    return;
   }
 
-  function renderGroupItems(groups) {
-    if (!groups || groups.length === 0) {
-      groupList.innerHTML = `
-        <div class="empty-state">
-          グループは作成されていません。<br>
-          「タブを一括整理」を押すと色付きグループに整理されます。
-        </div>
-      `;
+  const choices = [...menu.querySelectorAll('.correction-choice')];
+  const nextIndex = SmartTabMenuNavigation.getNextIndex(
+    event.key,
+    choices.indexOf(document.activeElement),
+    choices.length
+  );
+  if (nextIndex === null) return;
+  event.preventDefault();
+  for (const [index, choice] of choices.entries()) choice.tabIndex = index === nextIndex ? 0 : -1;
+  choices[nextIndex].focus({ preventScroll: true });
+}
+
+async function applyCorrection(tabId, targetCategoryId) {
+  if (!undoAvailable || !currentUndoOperationId) return;
+  const correctionOperationId = currentUndoOperationId;
+  completionActionHadFocus = document.activeElement instanceof Element
+    && Boolean(document.activeElement.closest('.correction-trigger, .correction-choice'));
+  undoAvailable = false;
+  document.getElementById('btnUndo').disabled = true;
+  for (const button of document.querySelectorAll('.correction-trigger, .correction-choice')) {
+    button.disabled = true;
+  }
+  setStatus('completionStatus', '分類ルールを修正しています…', null);
+
+  try {
+    const response = await sendAction({
+      action: 'CORRECT_CLASSIFICATION',
+      windowId: currentWindowId,
+      operationId: correctionOperationId,
+      tabId,
+      targetCategoryId
+    });
+    if (!response?.success) throw new Error(response?.message || '分類を修正できませんでした。');
+    renderCompletion(response.undo);
+    setStatus('completionStatus', response.message, null);
+  } catch (error) {
+    const state = await safeReloadPopupState();
+    if (SmartTabActionReconciliation.isCorrectionApplied(state?.undo, {
+      operationId: correctionOperationId,
+      tabId,
+      targetCategoryId
+    })) {
+      renderPopupState(state);
+      setStatus('completionStatus', '分類ルールの修正結果を確認しました。', null);
       return;
     }
-
-    groupList.innerHTML = '';
-    for (const g of groups) {
-      const itemEl = document.createElement('div');
-      itemEl.className = `group-item color-${g.color || 'grey'}`;
-      itemEl.innerHTML = `
-        <div class="group-header">
-          <span class="group-name">${escapeHtml(g.title)}</span>
-          <span class="group-badge">${g.tabCount} タブ</span>
-        </div>
-        <div class="group-preview" title="${escapeHtml(g.previewText)}">
-          ${escapeHtml(g.previewText || 'なし')}
-        </div>
-      `;
-      groupList.appendChild(itemEl);
+    if (state?.inProgress) {
+      renderPopupState(state);
+      return;
     }
+    if (state?.undo?.available && state.undo.operationId !== correctionOperationId) {
+      renderPopupState(state);
+      setStatus('completionStatus', '別の整理結果へ更新されたため、修正していません。', 'error');
+      return;
+    }
+    if (state?.success && !state.undo?.available) {
+      expireCompletionActions({ force: true });
+      return;
+    }
+    if (SmartTabActionExpiry.isExpired(currentUndoExpiresAt)) {
+      expireCompletionActions({ force: true });
+      return;
+    }
+    undoAvailable = true;
+    document.getElementById('btnUndo').disabled = false;
+    for (const button of document.querySelectorAll('.correction-trigger, .correction-choice')) {
+      button.disabled = false;
+    }
+    scheduleCompletionExpiry({ available: true, expiresAt: currentUndoExpiresAt });
+    if (completionActionHadFocus) closeOpenCorrectionMenu({ restoreFocus: true });
+    completionActionHadFocus = false;
+    setStatus('completionStatus', error?.message || '分類を修正できませんでした。', 'error');
+  }
+}
+
+async function organizeCurrentWindow() {
+  if (!currentConfirmationToken) {
+    const state = await safeReloadPopupState();
+    if (state) {
+      renderPopupState(state);
+      setStatus('confirmationStatus', '最新の件数を確認しました。', null);
+    } else {
+      setStatus('confirmationStatus', '状態を確認できませんでした。もう一度お試しください。', 'error');
+    }
+    return;
+  }
+  const confirmationToken = currentConfirmationToken;
+  const previousUndoOperationId = currentUndoOperationId;
+  renderProgress();
+  try {
+    const response = await sendAction({
+      action: 'ORGANIZE_CURRENT_WINDOW_CONFIRMED',
+      windowId: currentWindowId,
+      confirmationToken
+    });
+    if (!response?.success) throw new Error(response?.message || '整理できませんでした。');
+    if (response.undo?.available) {
+      renderCompletion(response.undo);
+      if (response.ownershipConflicts > 0) {
+        setStatus('completionStatus', '同名グループと安全に照合できない分類は変更していません。', null);
+      }
+    } else {
+      renderCompletion(null, response.message);
+    }
+  } catch (error) {
+    const state = await safeReloadPopupState();
+    const reconciliation = SmartTabActionReconciliation.reconcileMutationState(
+      state,
+      previousUndoOperationId
+    );
+    if (reconciliation.action === SmartTabActionReconciliation.ACTIONS.COMPLETED) {
+      renderPopupState(state);
+      setStatus('completionStatus', '整理結果を確認しました。', null);
+      return;
+    }
+    if (reconciliation.action === SmartTabActionReconciliation.ACTIONS.IN_PROGRESS) {
+      renderPopupState(state);
+      return;
+    }
+    renderConfirmation(state?.preview || { count: null });
+    setStatus('confirmationStatus', error?.message || '整理できませんでした。もう一度お試しください。', 'error');
+  }
+}
+
+async function handleUndoShortcut(event) {
+  if (
+    !SmartTabKeyboardShortcuts.matchesUndoShortcut(event)
+    || !undoAvailable
+    || document.getElementById('completionView').hidden
+    || isEditableTarget(event.target)
+  ) return;
+
+  event.preventDefault();
+  await undoLastAction();
+}
+
+async function undoLastAction() {
+  if (!undoAvailable || document.getElementById('completionView').hidden) return;
+  const undoOperationId = currentUndoOperationId;
+  completionActionHadFocus = document.activeElement instanceof Element
+    && Boolean(document.activeElement.closest('#btnUndo'));
+  undoAvailable = false;
+  const undoButton = document.getElementById('btnUndo');
+  undoButton.disabled = true;
+  setStatus('completionStatus', '元に戻しています…', null);
+
+  try {
+    const response = await sendUndoAction(undoOperationId);
+    if (!response?.success) throw new Error(response?.message || '元に戻せませんでした。');
+    currentUndoOperationId = null;
+    currentUndoExpiresAt = null;
+    document.getElementById('completionTitle').textContent = '元に戻しました';
+    document.getElementById('completionDescription').textContent = response.message;
+    document.getElementById('completionGroups').replaceChildren();
+    document.getElementById('completionGroups').hidden = true;
+    undoButton.hidden = true;
+    setStatus('completionStatus', response.partial ? '後から変更されたタブはそのまま残しています。' : '', null);
+    document.getElementById('btnClose').focus({ preventScroll: true });
+  } catch (error) {
+    const state = await safeReloadPopupState();
+    if (state?.inProgress) {
+      renderPopupState(state);
+      return;
+    }
+    if (state?.undo?.available) {
+      renderPopupState(state);
+      setStatus('completionStatus', error?.message || '元に戻せませんでした。', 'error');
+      return;
+    }
+    if (state?.success) {
+      expireCompletionActions({ force: true });
+      return;
+    }
+    if (SmartTabActionExpiry.isExpired(currentUndoExpiresAt)) {
+      expireCompletionActions({ force: true });
+      return;
+    }
+    undoAvailable = true;
+    currentUndoOperationId = undoOperationId;
+    undoButton.hidden = false;
+    undoButton.disabled = false;
+    scheduleCompletionExpiry({ available: true, expiresAt: currentUndoExpiresAt });
+    if (completionActionHadFocus) undoButton.focus({ preventScroll: true });
+    completionActionHadFocus = false;
+    setStatus('completionStatus', error?.message || '元に戻せませんでした。', 'error');
+  }
+}
+
+async function sendUndoAction(operationId) {
+  const message = {
+    action: 'UNDO_LAST_ACTION',
+    windowId: currentWindowId,
+    operationId
+  };
+  try {
+    return await sendAction(message);
+  } catch (error) {
+    return sendAction(message);
+  }
+}
+
+async function openSettings() {
+  if (preview && window.parent !== window) {
+    window.parent.postMessage({
+      source: 'smart-tab-grouper-preview',
+      type: 'open-settings'
+    }, '*');
+    return;
   }
 
-  function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  try {
+    const optionsUrl = chrome.runtime.getURL('options/options.html');
+    const targetWindowId = Number.isInteger(currentWindowId)
+      ? currentWindowId
+      : await resolveCurrentWindowId();
+    const tabs = await chrome.tabs.query({});
+    const destination = SmartTabNavigation.chooseSettingsDestination(tabs, targetWindowId, optionsUrl);
+    const existing = destination.type === 'reuse' ? destination.tab : null;
+    const existingHash = existing?.url ? new URL(existing.url).hash : '';
+    const targetUrl = new URL(optionsUrl);
+    targetUrl.searchParams.set('windowId', String(targetWindowId));
+    targetUrl.hash = existingHash;
+    if (destination.type === 'reuse') {
+      if (Number.isInteger(existing.windowId)) {
+        await chrome.windows.update(existing.windowId, { focused: true });
+      }
+      await chrome.tabs.update(existing.id, { active: true, url: targetUrl.href });
+    } else if (destination.type === 'replace') {
+      await chrome.tabs.update(destination.tab.id, { url: targetUrl.href, active: true });
+    } else {
+      await chrome.tabs.create({
+        windowId: targetWindowId,
+        url: targetUrl.href,
+        active: true
+      });
+    }
+    window.close();
+  } catch (error) {
+    const statusId = document.getElementById('completionView').hidden
+      ? 'confirmationStatus'
+      : 'completionStatus';
+    setStatus(statusId, '設定を開けませんでした。', 'error');
+  }
+}
+
+function startProgressPolling() {
+  progressPoller.start();
+}
+
+function stopProgressPolling() {
+  progressPoller.stop();
+}
+
+async function safeReloadPopupState() {
+  try {
+    const state = await sendAction({ action: 'GET_POPUP_STATE', windowId: currentWindowId });
+    return state?.success ? state : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function showOnly(viewId) {
+  for (const view of document.querySelectorAll('.popup-view')) {
+    view.hidden = view.id !== viewId;
+  }
+}
+
+function setStatus(id, message, state) {
+  const element = document.getElementById(id);
+  element.textContent = message || '';
+  if (state) element.dataset.state = state;
+  else delete element.dataset.state;
+}
+
+function isEditableTarget(target) {
+  return target instanceof HTMLElement
+    && (target.matches('input, textarea, select') || target.isContentEditable);
+}
+
+async function resolveCurrentWindowId() {
+  if (preview) return 1;
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (Number.isInteger(activeTab?.windowId)) return activeTab.windowId;
+  return (await chrome.windows.getCurrent()).id;
+}
+
+function sendAction(message) {
+  if (preview) return preview.send(message);
+  return chrome.runtime.sendMessage(message);
+}
+
+function closePopup(reason) {
+  stopProgressPolling();
+  if (preview && window.parent !== window) {
+    window.parent.postMessage({
+      source: 'smart-tab-grouper-preview',
+      type: 'popup-closed',
+      reason
+    }, '*');
+    return;
+  }
+  window.close();
+}
+
+function observePreviewSize() {
+  if (!preview || window.parent === window || typeof ResizeObserver !== 'function') return;
+  const report = () => window.parent.postMessage({
+    source: 'smart-tab-grouper-preview',
+    type: 'popup-size',
+    height: Math.ceil(document.documentElement.scrollHeight)
+  }, '*');
+  new ResizeObserver(report).observe(document.body);
+  report();
+}
+
+function createPreviewAdapter() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('preview') !== '1' || window.location.protocol === 'chrome-extension:') return null;
+
+  const theme = params.get('theme');
+  const palette = params.get('palette');
+  const shadow = params.get('shadow');
+  if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+  if (shadow === 'off') document.documentElement.dataset.shadow = 'off';
+
+  const uiTheme = palette === 'custom'
+    ? SmartTabTheme.normalizeConfig({ mode: 'custom', seed: params.get('seed') })
+    : SmartTabTheme.normalizeConfig({ mode: 'preset', preset: palette });
+  const storageKey = 'smart-tab-grouper-popup-preview-undo';
+  const actionDelay = clampDelay(params.get('actionDelay'), 700);
+  const previewUndoMaximum = 30 * 60 * 1000;
+  const undoTtl = SmartTabActionExpiry.clampDuration(
+    params.get('undoTtl'),
+    previewUndoMaximum,
+    previewUndoMaximum
+  );
+  let undoReceipt = null;
+  let lostUndoResponse = false;
+  let lostOrganizeResponse = false;
+  let lostCorrectionResponse = false;
+  let staleOrganizeResponse = false;
+  const startupProgress = params.get('startup') === 'progress';
+  const startupCompletesAt = Date.now() + 3000;
+
+  function loadPreviewUndo() {
+    const undo = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+    if (!undo || !SmartTabActionExpiry.isExpired(undo.expiresAt)) return undo;
+    sessionStorage.removeItem(storageKey);
+    return null;
   }
 
-  // Toggles Handlers
-  chkAutoGroup.addEventListener('change', async (e) => {
-    const data = await chrome.storage.sync.get(['settings']);
-    const settings = data.settings || {};
-    settings.autoGroupOnUpdate = e.target.checked;
-    await chrome.storage.sync.set({ settings });
-    showToast(e.target.checked ? "リアルタイム分け ON" : "リアルタイム分け OFF");
-  });
-
-  chkPreviewMode.addEventListener('change', async (e) => {
-    const data = await chrome.storage.sync.get(['settings']);
-    const settings = data.settings || {};
-    settings.previewMode = e.target.checked;
-    await chrome.storage.sync.set({ settings });
-    showToast(e.target.checked ? "🧪 プレビューモード ON" : "✨ 通常モード ON");
-    await refreshUI();
-  });
-
-  // Action Buttons
-  btnOrganize.addEventListener('click', async () => {
-    btnOrganize.disabled = true;
-    btnOrganize.style.opacity = '0.7';
-    chrome.runtime.sendMessage({ action: "ORGANIZE_CURRENT_WINDOW" }, async (res) => {
-      btnOrganize.disabled = false;
-      btnOrganize.style.opacity = '1';
-      showToast(res && res.isPreview ? "🧪 プレビューシミュレーション完了" : "✨ タブ整理完了！");
-      await refreshUI();
-    });
-  });
-
-  btnUndo.addEventListener('click', async () => {
-    chrome.runtime.sendMessage({ action: "UNDO_LAST_ACTION" }, async (res) => {
-      if (res && res.success) {
-        showToast("↩️ 前回の整理を元に戻しました！");
-      } else {
-        showToast(res ? res.message : "元に戻す履歴がありません");
+  function createPreviewUndo() {
+    return {
+      available: true,
+      operationId: 'preview-operation',
+      windowId: 1,
+      expiresAt: Date.now() + undoTtl,
+      summary: {
+        count: 4,
+        groups: [
+          {
+            categoryId: 'cat_dev', name: '💻 開発・プログラミング', color: 'purple', count: 2,
+            tabs: [
+              { tabId: 1, title: 'GitHub — smart-tab-grouper', url: 'https://github.com/example/smart-tab-grouper' },
+              { tabId: 2, title: 'JavaScript API', url: 'https://developer.example.com/api' }
+            ]
+          },
+          {
+            categoryId: 'cat_ai_search', name: '🔍 検索・AIアシスタント', color: 'cyan', count: 1,
+            tabs: [{ tabId: 3, title: '検索結果', url: 'https://search.example.com/' }]
+          },
+          {
+            categoryId: 'cat_news', name: '📰 ニュース・情報', color: 'orange', count: 1,
+            tabs: [{ tabId: 4, title: '今日のニュース', url: 'https://news.example.com/today' }]
+          }
+        ]
       }
-      await refreshUI();
-    });
-  });
+    };
+  }
 
-  btnExcludeCurrent.addEventListener('click', async () => {
-    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (activeTabs[0] && activeTabs[0].url) {
-      try {
-        const u = new URL(activeTabs[0].url);
-        const host = u.hostname;
-        chrome.runtime.sendMessage({ action: "ADD_EXCLUSION", domain: host }, (res) => {
-          showToast(`🚫 ${host} を除外リストに追加`);
-        });
-      } catch (e) {
-        showToast("有効なWebドメインではありません");
+  function buildPreviewPopupState({ undo = null, inProgress = false } = {}) {
+    return {
+      success: true,
+      windowId: 1,
+      undo,
+      inProgress,
+      operationType: inProgress ? 'organize' : null,
+      preview: {
+        count: 4,
+        groupCount: 3,
+        unresolved: 4,
+        contentClassificationEnabled: true,
+        contentClassificationAvailable: true,
+        contentLimitExceeded: false,
+        confirmationToken: { version: 1, windowId: 1, digest: 'popup-preview' }
+      },
+      categories: [
+        { id: 'cat_dev', name: '💻 開発・プログラミング', color: 'purple' },
+        { id: 'cat_ai_search', name: '🔍 検索・AIアシスタント', color: 'cyan' },
+        { id: 'cat_news', name: '📰 ニュース・情報', color: 'orange' },
+        { id: 'cat_shopping', name: '🛒 ショッピング', color: 'yellow' }
+      ]
+    };
+  }
+
+  return Object.freeze({
+    theme: theme === 'dark' ? 'dark' : 'light',
+    uiTheme,
+    async send(message) {
+      if (message.action === 'GET_POPUP_STATE') {
+        if (startupProgress) {
+          await wait(900);
+          if (Date.now() < startupCompletesAt) {
+            return buildPreviewPopupState({ inProgress: true });
+          }
+          let undo = loadPreviewUndo();
+          if (!undo) {
+            undo = createPreviewUndo();
+            sessionStorage.setItem(storageKey, JSON.stringify(undo));
+          }
+          return buildPreviewPopupState({ undo });
+        }
+        return buildPreviewPopupState({ undo: loadPreviewUndo() });
       }
+      await wait(actionDelay);
+      if (
+        params.get('outcome') === 'stale'
+        && message.action === 'ORGANIZE_CURRENT_WINDOW_CONFIRMED'
+        && !staleOrganizeResponse
+      ) {
+        staleOrganizeResponse = true;
+        return {
+          success: false,
+          code: 'PREVIEW_STALE',
+          message: 'タブまたは分類設定が変わりました。最新の件数を確認してください。'
+        };
+      }
+      if (params.get('outcome') === 'error') {
+        return { success: false, message: '整理できませんでした。もう一度お試しください。' };
+      }
+      if (message.action === 'UNDO_LAST_ACTION') {
+        const undo = loadPreviewUndo();
+        if (!undo) {
+          if (undoReceipt?.operationId === message.operationId) return undoReceipt.result;
+          return { success: false, message: '元に戻せる整理はありません。' };
+        }
+        if (message.operationId && undo.operationId !== message.operationId) {
+          return { success: false, message: '表示後に別の整理が完了したため、元に戻していません。' };
+        }
+        const result = {
+          success: true,
+          restoredCount: 4,
+          skippedCount: 0,
+          partial: false,
+          message: '4件を元に戻しました。'
+        };
+        sessionStorage.removeItem(storageKey);
+        undoReceipt = { operationId: undo.operationId, result };
+        if (params.get('loss') === 'undo' && !lostUndoResponse) {
+          lostUndoResponse = true;
+          throw new Error('Undoの応答を確認できませんでした。');
+        }
+        return result;
+      }
+      if (message.action === 'CORRECT_CLASSIFICATION') {
+        const undo = loadPreviewUndo();
+        const tab = undo?.summary?.groups?.flatMap((group) => group.tabs || [])
+          .find((item) => item.tabId === message.tabId);
+        const target = [
+          { id: 'cat_dev', name: '💻 開発・プログラミング', color: 'purple' },
+          { id: 'cat_ai_search', name: '🔍 検索・AIアシスタント', color: 'cyan' },
+          { id: 'cat_news', name: '📰 ニュース・情報', color: 'orange' },
+          { id: 'cat_shopping', name: '🛒 ショッピング', color: 'yellow' }
+        ].find((item) => item.id === message.targetCategoryId);
+        if (!undo || !tab || !target) return { success: false, message: '分類を修正できませんでした。' };
+        for (const group of undo.summary.groups) {
+          group.tabs = (group.tabs || []).filter((item) => item.tabId !== tab.tabId);
+          group.count = group.tabs.length;
+        }
+        undo.summary.groups = undo.summary.groups.filter((group) => group.count > 0);
+        let group = undo.summary.groups.find((item) => item.categoryId === target.id);
+        if (!group) {
+          group = { categoryId: target.id, name: target.name, color: target.color, count: 0, tabs: [] };
+          undo.summary.groups.push(group);
+        }
+        group.tabs.push(tab);
+        group.count = group.tabs.length;
+        sessionStorage.setItem(storageKey, JSON.stringify(undo));
+        if (params.get('loss') === 'correction' && !lostCorrectionResponse) {
+          lostCorrectionResponse = true;
+          throw new Error('分類修正の応答を確認できませんでした。');
+        }
+        return { success: true, undo, message: `${getHostname(tab.url)} を「${target.name}」へ登録しました。` };
+      }
+      if (message.action === 'ORGANIZE_CURRENT_WINDOW_CONFIRMED') {
+        const undo = createPreviewUndo();
+        sessionStorage.setItem(storageKey, JSON.stringify(undo));
+        if (params.get('loss') === 'organize' && !lostOrganizeResponse) {
+          lostOrganizeResponse = true;
+          throw new Error('整理の応答を確認できませんでした。');
+        }
+        return { success: true, changed: true, count: 4, undo };
+      }
+      return { success: true };
     }
   });
+}
 
-  btnRemoveDuplicates.addEventListener('click', async () => {
-    chrome.runtime.sendMessage({ action: "CLOSE_DUPLICATES" }, async (res) => {
-      const count = res ? res.removedCount : 0;
-      showToast(`🧹 重複タブ ${count}件 削除`);
-      await refreshUI();
-    });
+async function initializeTheme() {
+  if (preview) {
+    SmartTabTheme.apply(activeUiTheme, { theme: preview.theme });
+    return;
+  }
+  const canUseExtensionStorage = window.location.protocol === 'chrome-extension:'
+    && Boolean(globalThis.chrome?.storage?.sync);
+  if (canUseExtensionStorage) {
+    try {
+      const data = await chrome.storage.sync.get(['uiTheme']);
+      activeUiTheme = SmartTabTheme.normalizeConfig(data.uiTheme);
+    } catch (error) {
+      activeUiTheme = cloneThemeConfig(SmartTabTheme.DEFAULT_CONFIG);
+    }
+  }
+  SmartTabTheme.apply(activeUiTheme);
+  globalThis.matchMedia?.('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    SmartTabTheme.apply(activeUiTheme);
   });
+}
 
-  btnUngroup.addEventListener('click', async () => {
-    chrome.runtime.sendMessage({ action: "UNGROUP_ALL" }, async (res) => {
-      showToast("🔓 グループを解除しました");
-      await refreshUI();
-    });
-  });
+function cloneThemeConfig(value) {
+  return JSON.parse(JSON.stringify(value));
+}
 
-  btnOptions.addEventListener('click', () => {
-    chrome.runtime.openOptionsPage();
-  });
+function clampDelay(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, 0), 5000);
+}
 
-  // Initial Load
-  await refreshUI();
-});
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function getHostname(rawUrl) {
+  try {
+    return new URL(rawUrl).hostname;
+  } catch (error) {
+    return '';
+  }
+}

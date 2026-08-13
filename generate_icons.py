@@ -43,4 +43,4 @@ def create_png(width, height, color_bg, color_fg1, color_fg2, filename):
   print(f'Saved {filename}')
 
 for s in [16, 48, 128]:
-  create_png(s, s, (139, 92, 246, 255), (6, 182, 212, 255), (236, 72, 153, 255), f'icons/icon{s}.png')
+  create_png(s, s, (0, 0, 0, 0), (26, 115, 232, 255), (138, 180, 248, 255), f'icons/icon{s}.png')

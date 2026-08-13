@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Tab Grouper UI Lab</title>
+  <link rel="stylesheet" href="preview.css">
+</head>
+<body>
+  <div class="lab-shell">
+    <aside class="controls" aria-label="プレビュー設定">
+      <div>
+        <p class="eyebrow">TEMPORARY TEST ENVIRONMENT</p>
+        <h1>UI Lab</h1>
+        <p class="intro">本番ポップアップを、そのまま安全に試します。</p>
+      </div>
+
+      <fieldset>
+        <legend>Chromeカラー</legend>
+        <div class="palette-grid" id="paletteOptions">
+          <button class="palette-chip is-selected" type="button" data-value="rose" aria-pressed="true"><span class="swatch rose"></span>Rose</button>
+          <button class="palette-chip" type="button" data-value="blue" aria-pressed="false"><span class="swatch blue"></span>Blue</button>
+          <button class="palette-chip" type="button" data-value="green" aria-pressed="false"><span class="swatch green"></span>Green</button>
+          <button class="palette-chip" type="button" data-value="violet" aria-pressed="false"><span class="swatch violet"></span>Violet</button>
+          <button class="palette-chip" type="button" data-value="neutral" aria-pressed="false"><span class="swatch neutral"></span>Neutral</button>
+          <button class="palette-chip" type="button" data-value="custom" aria-pressed="false"><span id="customSwatch" class="swatch custom"></span>Custom</button>
+        </div>
+        <label id="customSeedRow" class="custom-seed-row" hidden>
+          <span>基準色</span>
+          <input id="customSeedInput" type="color" value="#5b6f91">
+          <code id="customSeedValue">#5B6F91</code>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>外観</legend>
+        <div class="segmented" id="themeOptions">
+          <button class="is-selected" type="button" data-value="light" aria-pressed="true">ライト</button>
+          <button type="button" data-value="dark" aria-pressed="false">ダーク</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>実行結果</legend>
+        <div class="segmented" id="outcomeOptions">
+          <button class="is-selected" type="button" data-value="success" aria-pressed="true">成功</button>
+          <button type="button" data-value="stale" aria-pressed="false">状態変更</button>
+          <button type="button" data-value="error" aria-pressed="false">エラー</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Undo期限</legend>
+        <div class="segmented" id="undoTtlOptions">
+          <button class="is-selected" type="button" data-value="1800000" aria-pressed="true">30分</button>
+          <button type="button" data-value="2000" aria-pressed="false">2秒</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>起動状態</legend>
+        <div class="segmented" id="startupOptions">
+          <button class="is-selected" type="button" data-value="normal" aria-pressed="true">通常</button>
+          <button type="button" data-value="progress" aria-pressed="false">処理中</button>
+        </div>
+      </fieldset>
+
+      <label class="toggle-row">
+        <span>
+          <strong>影を表示</strong>
+          <small>Chrome式の二層シャドウ</small>
+        </span>
+        <input id="shadowToggle" type="checkbox" checked>
+      </label>
+
+      <button id="reopenButton" class="reopen-button" type="button">ポップアップを開き直す</button>
+    </aside>
+
+    <main class="stage">
+      <header class="stage-header">
+        <div>
+          <p class="stage-label">LIVE PREVIEW</p>
+          <p id="stageStatus" class="stage-status" role="status">操作できます</p>
+        </div>
+        <code id="viewportLabel">320 × 208</code>
+      </header>
+
+      <div class="browser-canvas">
+        <div class="chrome-context" aria-hidden="true">
+          <span class="chrome-tab"></span>
+          <span class="chrome-omnibox"></span>
+          <span class="chrome-action"></span>
+        </div>
+
+        <div class="popup-anchor">
+          <iframe id="popupPreview" title="Smart Tab Grouper ポップアッププレビュー" scrolling="no"></iframe>
+          <div id="closedState" class="closed-state" hidden>
+            <strong>ポップアップが閉じました</strong>
+            <span id="closedReason"></span>
+          </div>
+        </div>
+      </div>
+
+      <p class="hint">整理後は完了状態が残り、ポップアップを開き直しても確認できます。元に戻す操作は <kbd>Ctrl</kbd> + <kbd>Z</kbd> / <kbd>⌘</kbd> + <kbd>Z</kbd> です。</p>
+    </main>
+  </div>
+
+  <script src="../utils/theme.js"></script>
+  <script src="preview.js?v=serial-polling"></script>
+</body>
+</html>
