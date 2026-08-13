@@ -302,7 +302,7 @@ async function switchWorkspace(workspace, { updateHash = true, restoreFocus = fa
     if (dirty) {
       setOrganizerStatus(externalSettingsChanged
         ? '別の画面で設定が変わりました。最新を読み込んでから分類できます。'
-        : '分類設定を自動保存しています。完了後に分類できます。');
+        : '分類設定を自動保存しています。完了後に分類できます。', false, 'settings');
     }
   }
 }
@@ -1019,9 +1019,11 @@ async function reconcileOrganizerMutation(previousUndoOperationId) {
   );
 }
 
-function setOrganizerStatus(message, error = false) {
+function setOrganizerStatus(message, error = false, source = 'general') {
   organizerStatus.textContent = message || '';
   organizerStatus.classList.toggle('is-error', error);
+  if (message) organizerStatus.dataset.source = source;
+  else delete organizerStatus.dataset.source;
 }
 
 function ensureOrganizerStateIsCurrent() {
@@ -1207,7 +1209,11 @@ function flagExternalSettingsConflict() {
   externalSettingsChanged = true;
   updateDirtyState();
   if (activeWorkspace === 'organizer') {
-    setOrganizerStatus('別の画面で設定が変わりました。最新を読み込んでから分類できます。', true);
+    setOrganizerStatus(
+      '別の画面で設定が変わりました。最新を読み込んでから分類できます。',
+      true,
+      'settings'
+    );
   }
   if (!wasChanged) showToast('別の画面で設定が変更されました');
 }
@@ -2268,6 +2274,32 @@ function updateDirtyState() {
         : dirty ? '変更をまもなく自動保存します' : '変更は保存済みです';
   updateOrganizerControls();
   updateBehaviorOrganizeButton();
+  updateOrganizerSettingsStatus();
+}
+
+function updateOrganizerSettingsStatus() {
+  if (activeWorkspace !== 'organizer') return;
+  if (externalSettingsChanged) {
+    setOrganizerStatus(
+      '別の画面で設定が変わりました。最新を読み込んでから分類できます。',
+      true,
+      'settings'
+    );
+    return;
+  }
+  if (settingsSaveError) {
+    setOrganizerStatus(
+      '分類設定を保存できませんでした。設定画面で内容を確認してください。',
+      true,
+      'settings'
+    );
+    return;
+  }
+  if (dirty || settingsSaveInFlight) {
+    setOrganizerStatus('分類設定を自動保存しています。完了後に分類できます。', false, 'settings');
+    return;
+  }
+  if (organizerStatus.dataset.source === 'settings') setOrganizerStatus('');
 }
 
 function updateBehaviorOrganizeButton() {
