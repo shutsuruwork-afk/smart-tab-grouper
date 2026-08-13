@@ -49,6 +49,14 @@
         </div>
       </fieldset>
 
+      <fieldset>
+        <legend>Undo期限</legend>
+        <div class="segmented" id="undoTtlOptions">
+          <button class="is-selected" type="button" data-value="1800000" aria-pressed="true">30分</button>
+          <button type="button" data-value="2000" aria-pressed="false">2秒</button>
+        </div>
+      </fieldset>
+
       <label class="toggle-row">
         <span>
           <strong>影を表示</strong>
@@ -90,6 +98,6 @@
   </div>
 
   <script src="../utils/theme.js"></script>
-  <script src="preview.js"></script>
+  <script src="preview.js?v=undo-expiry"></script>
 </body>
 </html>

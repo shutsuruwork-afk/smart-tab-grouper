@@ -117,6 +117,7 @@ let selectedCurrentGroupId = null;
 let organizerLoading = false;
 let organizerRefreshTimer = null;
 let organizerRefreshPending = false;
+let organizerUndoExpiryTimer = null;
 let behaviorActionRunning = false;
 let organizerDialogMode = 'window';
 let pendingWindowConfirmationToken = null;
@@ -415,7 +416,29 @@ function renderOrganizerWorkspace() {
   }
 
   organizerUndoHint.hidden = organizerState?.undo?.available !== true;
+  scheduleOrganizerUndoExpiry(organizerState?.undo);
   renderSelectedCurrentGroup();
+}
+
+function scheduleOrganizerUndoExpiry(undoState) {
+  clearTimeout(organizerUndoExpiryTimer);
+  organizerUndoExpiryTimer = null;
+  if (!undoState?.available) return;
+  const delay = SmartTabActionExpiry.getDelay(undoState.expiresAt);
+  if (delay === null) return;
+  const operationId = undoState.operationId;
+  organizerUndoExpiryTimer = setTimeout(() => {
+    organizerUndoExpiryTimer = null;
+    if (organizerState?.undo?.operationId !== operationId) return;
+    organizerState.undo = null;
+    organizerUndoHint.hidden = true;
+    scheduleOrganizerRefresh(0);
+  }, delay);
+}
+
+function clearOrganizerUndoExpiry() {
+  clearTimeout(organizerUndoExpiryTimer);
+  organizerUndoExpiryTimer = null;
 }
 
 function renderCurrentGroupButton(group) {
@@ -898,6 +921,7 @@ async function undoOrganizerAction() {
     || !workspaceMenu.hidden
   ) return;
   const undoOperationId = organizerState.undo.operationId;
+  clearOrganizerUndoExpiry();
   organizerState.undo = null;
   organizerUndoHint.hidden = true;
   setOrganizerStatus('元に戻しています…');
@@ -2320,10 +2344,18 @@ function createOrganizerAdapter() {
   let previewUndoAvailable = false;
   let previewUndoAction = null;
   let previewUndoOperationId = null;
+  let previewUndoExpiresAt = null;
   let previewOperationCounter = 0;
   const previewLostResponses = new Set();
-  const previewLoss = new URLSearchParams(window.location.search).get('loss');
-  const previewStale = new URLSearchParams(window.location.search).get('stale');
+  const previewParams = new URLSearchParams(window.location.search);
+  const previewLoss = previewParams.get('loss');
+  const previewStale = previewParams.get('stale');
+  const previewUndoMaximum = 30 * 60 * 1000;
+  const previewUndoTtl = SmartTabActionExpiry.clampDuration(
+    previewParams.get('undoTtl'),
+    previewUndoMaximum,
+    previewUndoMaximum
+  );
   const previewGroupOverrides = new Map();
   const previewTabs = [
     { id: 101, groupId: 11, index: 0, title: 'GitHub — smart-tab-grouper', url: 'https://github.com/example/smart-tab-grouper' },
@@ -2335,8 +2367,18 @@ function createOrganizerAdapter() {
     { id: 107, groupId: -1, index: 6, title: '技術ニュース', url: 'https://it.example.com/article' }
   ];
 
+  function expirePreviewUndoIfNeeded() {
+    if (!previewUndoAvailable || !SmartTabActionExpiry.isExpired(previewUndoExpiresAt)) return false;
+    previewUndoAvailable = false;
+    previewUndoAction = null;
+    previewUndoOperationId = null;
+    previewUndoExpiresAt = null;
+    return true;
+  }
+
   return {
     async load() {
+      expirePreviewUndoIfNeeded();
       const tabs = previewTabs.map((tab) => {
         if (previewOrganized && [106, 107].includes(tab.id)) return { ...tab, groupId: 14 };
         if (previewReorganized && tab.id === 102) return { ...tab, groupId: 12 };
@@ -2369,7 +2411,11 @@ function createOrganizerAdapter() {
         operationType: null,
         recovery: null,
         undo: previewUndoAvailable
-          ? { available: true, operationId: previewUndoOperationId }
+          ? {
+            available: true,
+            operationId: previewUndoOperationId,
+            expiresAt: previewUndoExpiresAt
+          }
           : null
       };
     },
@@ -2387,6 +2433,7 @@ function createOrganizerAdapter() {
       previewOrganized = true;
       previewUndoAvailable = true;
       previewUndoOperationId = `options-preview-${++previewOperationCounter}`;
+      previewUndoExpiresAt = Date.now() + previewUndoTtl;
       if (previewLoss === 'organize' && !previewLostResponses.has('organize')) {
         previewLostResponses.add('organize');
         throw new Error('整理の応答を確認できませんでした。');
@@ -2436,6 +2483,7 @@ function createOrganizerAdapter() {
       previewReorganized = true;
       previewUndoAvailable = true;
       previewUndoOperationId = `options-preview-${++previewOperationCounter}`;
+      previewUndoExpiresAt = Date.now() + previewUndoTtl;
       if (previewLoss === 'reorganize' && !previewLostResponses.has('reorganize')) {
         previewLostResponses.add('reorganize');
         throw new Error('再構成の応答を確認できませんでした。');
@@ -2458,6 +2506,7 @@ function createOrganizerAdapter() {
       });
       previewUndoAvailable = true;
       previewUndoOperationId = `options-preview-${++previewOperationCounter}`;
+      previewUndoExpiresAt = Date.now() + previewUndoTtl;
       if (previewLoss === 'edit' && !previewLostResponses.has('edit')) {
         previewLostResponses.add('edit');
         throw new Error('グループ変更の応答を確認できませんでした。');
@@ -2470,6 +2519,9 @@ function createOrganizerAdapter() {
     },
     async undo(windowId, operationId) {
       await waitForPreview(300);
+      if (expirePreviewUndoIfNeeded()) {
+        return { success: false, message: '元に戻せる時間が終了しました。' };
+      }
       if (operationId && operationId !== previewUndoOperationId) {
         return { success: false, message: '表示後に別の整理が完了したため、元に戻していません。' };
       }
@@ -2487,6 +2539,7 @@ function createOrganizerAdapter() {
       previewUndoAction = null;
       previewUndoAvailable = false;
       previewUndoOperationId = null;
+      previewUndoExpiresAt = null;
       return { success: true, restoredCount: 2, message: '2件を元に戻しました。' };
     }
   };

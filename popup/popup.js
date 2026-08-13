@@ -3,9 +3,12 @@ let activeUiTheme = preview?.uiTheme || cloneThemeConfig(SmartTabTheme.DEFAULT_C
 let currentWindowId = null;
 let undoAvailable = false;
 let currentUndoOperationId = null;
+let currentUndoExpiresAt = null;
 let availableCategories = [];
 let currentConfirmationToken = null;
 let pollTimer = null;
+let completionExpiryTimer = null;
+let completionActionHadFocus = false;
 let openCorrectionMenu = null;
 
 const themeReady = initializeTheme();
@@ -62,9 +65,12 @@ function renderPopupState(state) {
 }
 
 function renderConfirmation(previewState = {}, recovery = null) {
+  clearCompletionExpiryTimer();
   showOnly('confirmationView');
   undoAvailable = false;
   currentUndoOperationId = null;
+  currentUndoExpiresAt = null;
+  completionActionHadFocus = false;
   const title = document.getElementById('confirmationTitle');
   const description = document.getElementById('confirmationDescription');
   const confirmButton = document.getElementById('btnConfirm');
@@ -116,8 +122,11 @@ function renderConfirmation(previewState = {}, recovery = null) {
 }
 
 function renderProgress(operationType = 'organize') {
+  clearCompletionExpiryTimer();
   showOnly('progressView');
   undoAvailable = false;
+  currentUndoExpiresAt = null;
+  completionActionHadFocus = false;
   const content = {
     undo: ['元に戻しています…', '直前の状態を安全に復元しています。'],
     correction: ['分類を修正しています…', 'タブの移動とドメイン登録を反映しています。'],
@@ -129,6 +138,7 @@ function renderProgress(operationType = 'organize') {
 }
 
 function renderCompletion(undoState, fallbackMessage = '') {
+  clearCompletionExpiryTimer();
   showOnly('completionView');
   currentConfirmationToken = null;
   const summary = undoState?.summary || { count: 0, groups: [] };
@@ -137,6 +147,8 @@ function renderCompletion(undoState, fallbackMessage = '') {
   const isGroupEdit = summary.kind === 'group-edit';
   undoAvailable = undoState?.available === true;
   currentUndoOperationId = undoState?.operationId || null;
+  currentUndoExpiresAt = undoState?.expiresAt ?? null;
+  completionActionHadFocus = false;
 
   document.getElementById('completionTitle').textContent = isGroupEdit
     ? 'グループを変更しました'
@@ -152,7 +164,44 @@ function renderCompletion(undoState, fallbackMessage = '') {
   document.getElementById('btnUndo').hidden = !undoAvailable;
   document.getElementById('btnUndo').disabled = false;
   setStatus('completionStatus', '', null);
+  scheduleCompletionExpiry(undoState);
   document.getElementById('btnClose').focus({ preventScroll: true });
+}
+
+function scheduleCompletionExpiry(undoState) {
+  clearCompletionExpiryTimer();
+  if (!undoState?.available) return;
+  const delay = SmartTabActionExpiry.getDelay(undoState.expiresAt);
+  if (delay === null) return;
+  completionExpiryTimer = setTimeout(expireCompletionActions, delay);
+}
+
+function clearCompletionExpiryTimer() {
+  clearTimeout(completionExpiryTimer);
+  completionExpiryTimer = null;
+}
+
+function expireCompletionActions({ force = false } = {}) {
+  completionExpiryTimer = null;
+  if (document.getElementById('completionView').hidden || (!force && !undoAvailable)) return;
+  const focusedElement = document.activeElement;
+  const actionHadFocus = focusedElement instanceof Element
+    && Boolean(focusedElement.closest('#btnUndo, .correction-trigger, .correction-choice'))
+    || completionActionHadFocus;
+  undoAvailable = false;
+  currentUndoOperationId = null;
+  currentUndoExpiresAt = null;
+  completionActionHadFocus = false;
+  closeOpenCorrectionMenu();
+  const undoButton = document.getElementById('btnUndo');
+  undoButton.hidden = true;
+  undoButton.disabled = true;
+  for (const button of document.querySelectorAll('.correction-trigger, .correction-choice')) {
+    button.disabled = true;
+    if (button.classList.contains('correction-trigger')) button.hidden = true;
+  }
+  setStatus('completionStatus', '元に戻す・分類修正の有効時間が終了しました。', null);
+  if (actionHadFocus) document.getElementById('btnClose').focus({ preventScroll: true });
 }
 
 function renderCompletionGroups(groups) {
@@ -306,6 +355,8 @@ function handleCorrectionMenuKeydown(event, trigger, menu) {
 async function applyCorrection(tabId, targetCategoryId) {
   if (!undoAvailable || !currentUndoOperationId) return;
   const correctionOperationId = currentUndoOperationId;
+  completionActionHadFocus = document.activeElement instanceof Element
+    && Boolean(document.activeElement.closest('.correction-trigger, .correction-choice'));
   undoAvailable = false;
   document.getElementById('btnUndo').disabled = true;
   for (const button of document.querySelectorAll('.correction-trigger, .correction-choice')) {
@@ -344,11 +395,22 @@ async function applyCorrection(tabId, targetCategoryId) {
       setStatus('completionStatus', '別の整理結果へ更新されたため、修正していません。', 'error');
       return;
     }
+    if (state?.success && !state.undo?.available) {
+      expireCompletionActions({ force: true });
+      return;
+    }
+    if (SmartTabActionExpiry.isExpired(currentUndoExpiresAt)) {
+      expireCompletionActions({ force: true });
+      return;
+    }
     undoAvailable = true;
     document.getElementById('btnUndo').disabled = false;
     for (const button of document.querySelectorAll('.correction-trigger, .correction-choice')) {
       button.disabled = false;
     }
+    scheduleCompletionExpiry({ available: true, expiresAt: currentUndoExpiresAt });
+    if (completionActionHadFocus) closeOpenCorrectionMenu({ restoreFocus: true });
+    completionActionHadFocus = false;
     setStatus('completionStatus', error?.message || '分類を修正できませんでした。', 'error');
   }
 }
@@ -417,6 +479,8 @@ async function handleUndoShortcut(event) {
 async function undoLastAction() {
   if (!undoAvailable || document.getElementById('completionView').hidden) return;
   const undoOperationId = currentUndoOperationId;
+  completionActionHadFocus = document.activeElement instanceof Element
+    && Boolean(document.activeElement.closest('#btnUndo'));
   undoAvailable = false;
   const undoButton = document.getElementById('btnUndo');
   undoButton.disabled = true;
@@ -426,6 +490,7 @@ async function undoLastAction() {
     const response = await sendUndoAction(undoOperationId);
     if (!response?.success) throw new Error(response?.message || '元に戻せませんでした。');
     currentUndoOperationId = null;
+    currentUndoExpiresAt = null;
     document.getElementById('completionTitle').textContent = '元に戻しました';
     document.getElementById('completionDescription').textContent = response.message;
     document.getElementById('completionGroups').replaceChildren();
@@ -445,14 +510,20 @@ async function undoLastAction() {
       return;
     }
     if (state?.success) {
-      renderConfirmation(state.preview);
-      setStatus('confirmationStatus', '現在の状態を確認しました。元に戻せる操作は残っていません。', null);
+      expireCompletionActions({ force: true });
+      return;
+    }
+    if (SmartTabActionExpiry.isExpired(currentUndoExpiresAt)) {
+      expireCompletionActions({ force: true });
       return;
     }
     undoAvailable = true;
     currentUndoOperationId = undoOperationId;
     undoButton.hidden = false;
     undoButton.disabled = false;
+    scheduleCompletionExpiry({ available: true, expiresAt: currentUndoExpiresAt });
+    if (completionActionHadFocus) undoButton.focus({ preventScroll: true });
+    completionActionHadFocus = false;
     setStatus('completionStatus', error?.message || '元に戻せませんでした。', 'error');
   }
 }
@@ -602,18 +673,31 @@ function createPreviewAdapter() {
     : SmartTabTheme.normalizeConfig({ mode: 'preset', preset: palette });
   const storageKey = 'smart-tab-grouper-popup-preview-undo';
   const actionDelay = clampDelay(params.get('actionDelay'), 700);
+  const previewUndoMaximum = 30 * 60 * 1000;
+  const undoTtl = SmartTabActionExpiry.clampDuration(
+    params.get('undoTtl'),
+    previewUndoMaximum,
+    previewUndoMaximum
+  );
   let undoReceipt = null;
   let lostUndoResponse = false;
   let lostOrganizeResponse = false;
   let lostCorrectionResponse = false;
   let staleOrganizeResponse = false;
 
+  function loadPreviewUndo() {
+    const undo = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+    if (!undo || !SmartTabActionExpiry.isExpired(undo.expiresAt)) return undo;
+    sessionStorage.removeItem(storageKey);
+    return null;
+  }
+
   return Object.freeze({
     theme: theme === 'dark' ? 'dark' : 'light',
     uiTheme,
     async send(message) {
       if (message.action === 'GET_POPUP_STATE') {
-        const undo = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+        const undo = loadPreviewUndo();
         return {
           success: true,
           windowId: 1,
@@ -653,7 +737,7 @@ function createPreviewAdapter() {
         return { success: false, message: '整理できませんでした。もう一度お試しください。' };
       }
       if (message.action === 'UNDO_LAST_ACTION') {
-        const undo = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+        const undo = loadPreviewUndo();
         if (!undo) {
           if (undoReceipt?.operationId === message.operationId) return undoReceipt.result;
           return { success: false, message: '元に戻せる整理はありません。' };
@@ -677,7 +761,7 @@ function createPreviewAdapter() {
         return result;
       }
       if (message.action === 'CORRECT_CLASSIFICATION') {
-        const undo = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+        const undo = loadPreviewUndo();
         const tab = undo?.summary?.groups?.flatMap((group) => group.tabs || [])
           .find((item) => item.tabId === message.tabId);
         const target = [
@@ -711,7 +795,7 @@ function createPreviewAdapter() {
           available: true,
           operationId: 'preview-operation',
           windowId: 1,
-          expiresAt: Date.now() + 30 * 60 * 1000,
+          expiresAt: Date.now() + undoTtl,
           summary: {
             count: 4,
             groups: [

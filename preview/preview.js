@@ -3,6 +3,7 @@ const state = {
   seed: '#5b6f91',
   theme: 'light',
   outcome: 'success',
+  undoTtl: '1800000',
   shadow: true
 };
 
@@ -20,6 +21,7 @@ const customSwatch = document.getElementById('customSwatch');
 bindChoiceGroup('paletteOptions', 'palette');
 bindChoiceGroup('themeOptions', 'theme');
 bindChoiceGroup('outcomeOptions', 'outcome');
+bindChoiceGroup('undoTtlOptions', 'undoTtl');
 
 shadowToggle.addEventListener('change', () => {
   state.shadow = shadowToggle.checked;
@@ -45,7 +47,7 @@ window.addEventListener('message', (event) => {
     return;
   }
   if (event.data?.type === 'open-settings') {
-    window.open('../options/options.html?preview=1', 'smart-tab-grouper-options');
+    window.open(`../options/options.html?preview=1&undoTtl=${state.undoTtl}`, 'smart-tab-grouper-options');
     stageStatus.textContent = '設定画面を別タブで開きました';
     return;
   }
@@ -84,6 +86,7 @@ function openPopup() {
     seed: state.seed,
     theme: state.theme,
     outcome: state.outcome,
+    undoTtl: state.undoTtl,
     shadow: state.shadow ? 'on' : 'off',
     actionDelay: '900',
     closeDelay: '900'

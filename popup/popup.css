@@ -355,6 +355,13 @@ h1 {
   background: var(--sys-state-hover-on-subtle);
 }
 
+.correction-trigger:disabled,
+.correction-choice:disabled {
+  background: transparent;
+  color: var(--sys-color-on-surface-secondary);
+  cursor: default;
+}
+
 .correction-choices {
   grid-column: 1 / -1;
   padding-top: 5px;
