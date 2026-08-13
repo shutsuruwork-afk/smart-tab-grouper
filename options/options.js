@@ -117,6 +117,7 @@ let organizerLoading = false;
 let organizerRefreshTimer = null;
 let behaviorActionRunning = false;
 let organizerDialogMode = 'window';
+let pendingWindowConfirmationToken = null;
 let pendingGroupReorganization = null;
 let organizerDialogReturnFocus = null;
 let pendingGroupEdit = null;
@@ -537,6 +538,7 @@ async function openOrganizeDialog({ refresh = true } = {}) {
   const groupCount = Number(preview?.groupCount) || 0;
   const contentMayAdd = contentAssistMayAdd(preview);
   organizerDialogMode = 'window';
+  pendingWindowConfirmationToken = preview?.confirmationToken || null;
   pendingGroupReorganization = null;
   organizerDialogReturnFocus = organizeWindowButton;
   organizeDialogOverline.textContent = 'UNGROUPED TABS';
@@ -777,6 +779,7 @@ function closeOrganizeDialog() {
 
 function resetOrganizerDialogState() {
   organizerDialogMode = 'window';
+  pendingWindowConfirmationToken = null;
   pendingGroupReorganization = null;
   organizerDialogReturnFocus = null;
 }
@@ -794,9 +797,21 @@ async function organizeCurrentWindowFromSettings() {
   cancelOrganizeButton.disabled = true;
   organizeDialogDescription.textContent = '整理しています…';
   try {
-    const result = await organizer.organize(organizerState?.windowId);
+    const result = await organizer.organize(
+      organizerState?.windowId,
+      pendingWindowConfirmationToken
+    );
     resultReceived = true;
-    if (!result?.success) throw new Error(result?.message || '整理できませんでした。');
+    if (!result?.success) {
+      if (result?.code === 'PREVIEW_STALE') {
+        const message = result.message;
+        closeOrganizeDialog();
+        await loadOrganizerWorkspace();
+        setOrganizerStatus(message || '状態が変わりました。最新の件数を確認してください。');
+        return;
+      }
+      throw new Error(result?.message || '整理できませんでした。');
+    }
     closeOrganizeDialog();
     await loadOrganizerWorkspace();
     setOrganizerStatus(result.message || `${result.count || 0}件を整理しました。`);
@@ -2228,10 +2243,11 @@ function createOrganizerAdapter() {
           recovery: popupState.recovery || null
         };
       },
-      organize(windowId) {
+      organize(windowId, confirmationToken) {
         return chrome.runtime.sendMessage({
           action: 'ORGANIZE_CURRENT_WINDOW_CONFIRMED',
-          windowId
+          windowId,
+          confirmationToken
         });
       },
       previewGroup(windowId, groupId) {
@@ -2277,6 +2293,7 @@ function createOrganizerAdapter() {
   let previewOperationCounter = 0;
   const previewLostResponses = new Set();
   const previewLoss = new URLSearchParams(window.location.search).get('loss');
+  const previewStale = new URLSearchParams(window.location.search).get('stale');
   const previewGroupOverrides = new Map();
   const previewTabs = [
     { id: 101, groupId: 11, index: 0, title: 'GitHub — smart-tab-grouper', url: 'https://github.com/example/smart-tab-grouper' },
@@ -2315,7 +2332,8 @@ function createOrganizerAdapter() {
           unresolvedTabIds: [],
           unresolved: 0,
           contentClassificationEnabled: false,
-          contentClassificationAvailable: false
+          contentClassificationAvailable: false,
+          confirmationToken: { version: 1, windowId: 1, digest: 'options-preview' }
         },
         inProgress: false,
         operationType: null,
@@ -2327,6 +2345,14 @@ function createOrganizerAdapter() {
     },
     async organize() {
       await waitForPreview(500);
+      if (previewStale === 'organize' && !previewLostResponses.has('stale-organize')) {
+        previewLostResponses.add('stale-organize');
+        return {
+          success: false,
+          code: 'PREVIEW_STALE',
+          message: 'タブまたは分類設定が変わりました。最新の件数を確認してください。'
+        };
+      }
       previewUndoAction = { type: 'organize', previous: previewOrganized };
       previewOrganized = true;
       previewUndoAvailable = true;

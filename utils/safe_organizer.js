@@ -1,4 +1,5 @@
 import { classifyTab } from './classifier.js';
+import { confirmedTabStateMatches } from './organize_preview.js';
 
 export const MANAGED_GROUPS_STORAGE_KEY = 'smartTabGrouperManagedGroupsV1';
 
@@ -75,11 +76,21 @@ export async function organizeTabsSafely({
   categories,
   settings,
   classify = classifyTab,
+  confirmedTabStates = null,
   now = () => Date.now(),
   operationHooks = {}
 }) {
   const noneGroupId = chromeApi.tabGroups.TAB_GROUP_ID_NONE;
   const tabsBefore = await chromeApi.tabs.query({ windowId });
+  const confirmedById = Array.isArray(confirmedTabStates)
+    ? new Map(confirmedTabStates.map((tab) => [tab.id, tab]))
+    : null;
+  const tabsForPlan = confirmedById
+    ? tabsBefore.filter((tab) => confirmedTabStateMatches(tab, confirmedById.get(tab.id), {
+      categories,
+      settings
+    }))
+    : tabsBefore;
   const originalTabState = new Map(tabsBefore.map((tab) => [tab.id, {
     index: tab.index,
     groupId: tab.groupId,
@@ -87,7 +98,7 @@ export async function organizeTabsSafely({
     url: tab.url || tab.pendingUrl || '',
     title: tab.title || tab.url || ''
   }]));
-  const plan = buildSafeOrganizationPlan(tabsBefore, categories, settings, {
+  const plan = buildSafeOrganizationPlan(tabsForPlan, categories, settings, {
     noneGroupId,
     classify
   });
@@ -151,6 +162,7 @@ export async function organizeTabsSafely({
         categories,
         settings,
         expectedCategoryId: item.category.id,
+        confirmedById,
         classify
       });
       if (currentTabIds.length === 0) continue;
@@ -343,6 +355,7 @@ async function revalidateTabIds({
   categories,
   settings,
   expectedCategoryId,
+  confirmedById,
   classify
 }) {
   const accepted = [];
@@ -353,6 +366,10 @@ async function revalidateTabIds({
     } catch (error) {
       continue;
     }
+    if (confirmedById && !confirmedTabStateMatches(currentTab, confirmedById.get(tabId), {
+      categories,
+      settings
+    })) continue;
     if (currentTab.windowId !== windowId) continue;
     if (!isEligibleForSafeOrganize(currentTab, noneGroupId)) continue;
     const currentCategory = classify(currentTab, categories, settings);

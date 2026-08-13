@@ -5,6 +5,7 @@ import {
   MANAGED_GROUPS_STORAGE_KEY,
   organizeTabsSafely
 } from '../utils/safe_organizer.js';
+import { createConfirmedTabStates } from '../utils/organize_preview.js';
 
 const category = {
   id: 'cat_dev',
@@ -146,6 +147,85 @@ test('変更予定の記録に失敗した場合はタブへ触らない', async
 
   assert.equal(chromeApi.state.tabs[0].groupId, -1);
   assert.equal(chromeApi.state.groups.length, 0);
+});
+
+test('確認後に増えたタブは今回の整理対象へ含めない', async () => {
+  const confirmed = [makeTab(1, { groupId: -1 })];
+  const chromeApi = createChromeFake({
+    tabs: [...confirmed, makeTab(2, { index: 1, groupId: -1 })],
+    groups: [],
+    records: []
+  });
+
+  const result = await organizeTabsSafely({
+    chromeApi,
+    windowId: 7,
+    categories: [category],
+    settings: {},
+    confirmedTabStates: createConfirmedTabStates(confirmed, -1, {
+      categories: [category],
+      settings: {}
+    })
+  });
+
+  assert.equal(result.count, 1);
+  assert.notEqual(chromeApi.state.tabs[0].groupId, -1);
+  assert.equal(chromeApi.state.tabs[1].groupId, -1);
+});
+
+test('確認後に分類へ影響するタイトルが変わったタブはそのまま残す', async () => {
+  const keywordCategory = {
+    ...category,
+    domains: [],
+    titleKeywords: ['Build']
+  };
+  const confirmed = [makeTab(1, {
+    groupId: -1,
+    url: 'https://example.com/',
+    title: 'Build dashboard'
+  })];
+  const chromeApi = createChromeFake({
+    tabs: [makeTab(1, { groupId: -1, url: 'https://example.com/', title: 'Changed' })],
+    groups: [],
+    records: []
+  });
+
+  const result = await organizeTabsSafely({
+    chromeApi,
+    windowId: 7,
+    categories: [keywordCategory],
+    settings: {},
+    confirmedTabStates: createConfirmedTabStates(confirmed, -1, {
+      categories: [keywordCategory],
+      settings: {}
+    })
+  });
+
+  assert.equal(result.count, 0);
+  assert.equal(chromeApi.state.tabs[0].groupId, -1);
+});
+
+test('ドメイン判定が同じなら題名の更新だけで整理を止めない', async () => {
+  const confirmed = [makeTab(1, { groupId: -1, title: 'First' })];
+  const chromeApi = createChromeFake({
+    tabs: [makeTab(1, { groupId: -1, title: 'Changed' })],
+    groups: [],
+    records: []
+  });
+
+  const result = await organizeTabsSafely({
+    chromeApi,
+    windowId: 7,
+    categories: [category],
+    settings: {},
+    confirmedTabStates: createConfirmedTabStates(confirmed, -1, {
+      categories: [category],
+      settings: {}
+    })
+  });
+
+  assert.equal(result.count, 1);
+  assert.notEqual(chromeApi.state.tabs[0].groupId, -1);
 });
 
 function makeTab(id, overrides = {}) {

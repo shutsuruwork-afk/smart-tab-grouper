@@ -33,6 +33,11 @@ import {
 } from './utils/group_reorganizer.js';
 import { editGroupSafely } from './utils/group_editor.js';
 import {
+  createConfirmedTabStates,
+  createOrganizationPreviewToken,
+  organizationPreviewTokensEqual
+} from './utils/organize_preview.js';
+import {
   abandonContentAccessDraft,
   beginContentAccessDraft,
   commitContentAccessDraft,
@@ -156,12 +161,15 @@ async function simulateOrganizeTabs(windowId = null) {
 }
 
 // Main Tab Grouping Logic
-async function organizeTabs(windowId = null, { respectPreviewMode = true } = {}) {
-  const { categories, settings } = await getStorageConfig();
-
+async function organizeTabs(windowId = null, {
+  respectPreviewMode = true,
+  confirmationToken = null,
+  requireConfirmation = false
+} = {}) {
   // If in Preview Mode, do dry-run
-  if (respectPreviewMode && settings.previewMode) {
-    return await simulateOrganizeTabs(windowId);
+  if (respectPreviewMode) {
+    const initialConfig = await getStorageConfig();
+    if (initialConfig.settings.previewMode) return await simulateOrganizeTabs(windowId);
   }
 
   const targetWindowId = Number.isInteger(windowId) ? windowId : (await chrome.windows.getCurrent()).id;
@@ -183,19 +191,60 @@ async function organizeTabs(windowId = null, { respectPreviewMode = true } = {})
     }
     operationId = lease.operation.operationId;
 
-    const tabs = await chrome.tabs.query({ windowId: targetWindowId });
+    const [{ categories, settings }, tabs, contentAccessGranted] = await Promise.all([
+      getStorageConfig(),
+      chrome.tabs.query({ windowId: targetWindowId }),
+      hasContentClassificationAccess(chrome)
+    ]);
+    if (respectPreviewMode && settings.previewMode) {
+      await releaseOperationLease(chrome, operationId);
+      operationId = null;
+      return await simulateOrganizeTabs(targetWindowId);
+    }
+
+    const currentConfirmationToken = await createOrganizationPreviewToken({
+      windowId: targetWindowId,
+      tabs,
+      categories,
+      settings,
+      contentAccessGranted,
+      noneGroupId: chrome.tabGroups.TAB_GROUP_ID_NONE
+    });
+    if (
+      requireConfirmation
+      && !organizationPreviewTokensEqual(currentConfirmationToken, confirmationToken)
+    ) {
+      await releaseOperationLease(chrome, operationId);
+      operationId = null;
+      return {
+        success: false,
+        code: 'PREVIEW_STALE',
+        message: 'タブまたは分類設定が変わりました。最新の件数を確認してください。'
+      };
+    }
+
+    const effectiveSettings = requireConfirmation && !contentAccessGranted
+      ? { ...settings, contentClassificationEnabled: false }
+      : settings;
+    const confirmedTabStates = requireConfirmation
+      ? createConfirmedTabStates(tabs, chrome.tabGroups.TAB_GROUP_ID_NONE, {
+        categories,
+        settings: effectiveSettings
+      })
+      : null;
     const content = await prepareContentClassifications({
       chromeApi: chrome,
       tabs,
       categories,
-      settings
+      settings: effectiveSettings
     });
     const result = await organizeTabsSafely({
       chromeApi: chrome,
       windowId: targetWindowId,
       categories,
-      settings,
-      classify: createContentAssistedClassifier(content.classifications, settings),
+      settings: effectiveSettings,
+      classify: createContentAssistedClassifier(content.classifications, effectiveSettings),
+      confirmedTabStates,
       operationHooks: {
         onPrepared: (prepared) => prepareOperationJournal(
           chrome,
@@ -286,6 +335,14 @@ async function getPopupState(windowId = null) {
     && activeOperation.windowId === targetWindowId
     && Number(activeOperation.leaseExpiresAt) > Date.now()
   );
+  const confirmationToken = await createOrganizationPreviewToken({
+    windowId: targetWindowId,
+    tabs,
+    categories,
+    settings,
+    contentAccessGranted,
+    noneGroupId
+  });
 
   return {
     success: true,
@@ -303,7 +360,8 @@ async function getPopupState(windowId = null) {
       unresolved,
       contentClassificationEnabled,
       contentClassificationAvailable,
-      contentLimitExceeded: contentClassificationAvailable && unresolved > 30
+      contentLimitExceeded: contentClassificationAvailable && unresolved > 30,
+      confirmationToken
     },
     categories: categories
       .filter((category) => category.enabled !== false)
@@ -617,7 +675,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.action === "ORGANIZE_CURRENT_WINDOW_CONFIRMED") {
-    organizeTabs(message.windowId, { respectPreviewMode: false })
+    organizeTabs(message.windowId, {
+      respectPreviewMode: false,
+      confirmationToken: message.confirmationToken,
+      requireConfirmation: true
+    })
       .then(res => sendResponse(res))
       .catch(error => {
         console.error("Confirmed organize error:", error);

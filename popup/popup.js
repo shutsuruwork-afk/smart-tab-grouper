@@ -4,6 +4,7 @@ let currentWindowId = null;
 let undoAvailable = false;
 let currentUndoOperationId = null;
 let availableCategories = [];
+let currentConfirmationToken = null;
 let pollTimer = null;
 let openCorrectionMenu = null;
 
@@ -73,10 +74,13 @@ function renderConfirmation(previewState = {}, recovery = null) {
   const hasContentCandidates = previewState.contentClassificationEnabled && unresolved > 0;
   const contentAvailable = previewState.contentClassificationAvailable !== false;
   const contentMayAdd = hasContentCandidates && contentAvailable && !previewState.contentLimitExceeded;
+  currentConfirmationToken = previewState.confirmationToken || null;
+  confirmButton.textContent = '整理';
 
   if (count === null) {
-    title.textContent = '本当に整理しますか？';
-    description.textContent = '現在のウィンドウのタブをグループに整理します。';
+    title.textContent = '状態を確認できませんでした';
+    description.textContent = 'タブの件数をもう一度確認してください。';
+    confirmButton.textContent = '再確認';
     confirmButton.disabled = false;
   } else if (count === 0 && !contentMayAdd) {
     title.textContent = hasContentCandidates && (!contentAvailable || previewState.contentLimitExceeded)
@@ -126,6 +130,7 @@ function renderProgress(operationType = 'organize') {
 
 function renderCompletion(undoState, fallbackMessage = '') {
   showOnly('completionView');
+  currentConfirmationToken = null;
   const summary = undoState?.summary || { count: 0, groups: [] };
   const count = Number(summary.count) || 0;
   const groups = Array.isArray(summary.groups) ? summary.groups : [];
@@ -349,12 +354,24 @@ async function applyCorrection(tabId, targetCategoryId) {
 }
 
 async function organizeCurrentWindow() {
+  if (!currentConfirmationToken) {
+    const state = await safeReloadPopupState();
+    if (state) {
+      renderPopupState(state);
+      setStatus('confirmationStatus', '最新の件数を確認しました。', null);
+    } else {
+      setStatus('confirmationStatus', '状態を確認できませんでした。もう一度お試しください。', 'error');
+    }
+    return;
+  }
+  const confirmationToken = currentConfirmationToken;
   const previousUndoOperationId = currentUndoOperationId;
   renderProgress();
   try {
     const response = await sendAction({
       action: 'ORGANIZE_CURRENT_WINDOW_CONFIRMED',
-      windowId: currentWindowId
+      windowId: currentWindowId,
+      confirmationToken
     });
     if (!response?.success) throw new Error(response?.message || '整理できませんでした。');
     if (response.undo?.available) {
@@ -589,6 +606,7 @@ function createPreviewAdapter() {
   let lostUndoResponse = false;
   let lostOrganizeResponse = false;
   let lostCorrectionResponse = false;
+  let staleOrganizeResponse = false;
 
   return Object.freeze({
     theme: theme === 'dark' ? 'dark' : 'light',
@@ -607,7 +625,8 @@ function createPreviewAdapter() {
             unresolved: 4,
             contentClassificationEnabled: true,
             contentClassificationAvailable: true,
-            contentLimitExceeded: false
+            contentLimitExceeded: false,
+            confirmationToken: { version: 1, windowId: 1, digest: 'popup-preview' }
           },
           categories: [
             { id: 'cat_dev', name: '💻 開発・プログラミング', color: 'purple' },
@@ -618,6 +637,18 @@ function createPreviewAdapter() {
         };
       }
       await wait(actionDelay);
+      if (
+        params.get('outcome') === 'stale'
+        && message.action === 'ORGANIZE_CURRENT_WINDOW_CONFIRMED'
+        && !staleOrganizeResponse
+      ) {
+        staleOrganizeResponse = true;
+        return {
+          success: false,
+          code: 'PREVIEW_STALE',
+          message: 'タブまたは分類設定が変わりました。最新の件数を確認してください。'
+        };
+      }
       if (params.get('outcome') === 'error') {
         return { success: false, message: '整理できませんでした。もう一度お試しください。' };
       }
