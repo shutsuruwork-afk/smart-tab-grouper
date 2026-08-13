@@ -58,7 +58,7 @@
       <div id="completionGroups" class="completion-groups" aria-label="整理したグループ"></div>
       <p id="completionStatus" class="status-message" role="status" aria-live="polite"></p>
       <div class="view-actions completion-actions">
-        <button id="btnUndo" class="button button-secondary" type="button" title="ショートカット: Ctrl+Z" aria-label="タブグループを元に戻す">元に戻す</button>
+        <button id="btnUndo" class="button button-secondary" type="button" title="ショートカット: Ctrl+Z / ⌘Z" aria-label="タブグループを元に戻す" aria-keyshortcuts="Control+Z Meta+Z">元に戻す</button>
         <button id="btnClose" class="button button-primary" type="button">閉じる</button>
       </div>
     </section>
@@ -66,6 +66,7 @@
 
   <script src="../utils/theme.js"></script>
   <script src="../utils/tab_navigation.js"></script>
+  <script src="../utils/keyboard_shortcuts.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

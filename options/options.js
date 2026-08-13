@@ -182,6 +182,9 @@ document.addEventListener('DOMContentLoaded', initialize);
 
 async function initialize() {
   previewBadge.hidden = !previewMode;
+  const undoShortcut = SmartTabKeyboardShortcuts.getUndoShortcut();
+  organizerUndoHint.querySelector('[data-undo-modifier]').textContent = undoShortcut.modifier;
+  organizerUndoHint.setAttribute('aria-keyshortcuts', undoShortcut.ariaKeyShortcuts);
   const stored = await storage.load();
   categories = stored.categories;
   uiTheme = SmartTabTheme.normalizeConfig(stored.uiTheme);
@@ -357,10 +360,7 @@ function handleGlobalKeydown(event) {
     return;
   }
   if (
-    event.key.toLowerCase() === 'z'
-    && event.ctrlKey
-    && !event.altKey
-    && !event.shiftKey
+    SmartTabKeyboardShortcuts.matchesUndoShortcut(event)
     && activeWorkspace === 'organizer'
     && organizerState?.undo?.available
     && !isEditableElement(event.target)

@@ -30,6 +30,10 @@ async function initialize() {
 }
 
 function bindStaticActions() {
+  const undoShortcut = SmartTabKeyboardShortcuts.getUndoShortcut();
+  const undoButton = document.getElementById('btnUndo');
+  undoButton.title = `ショートカット: ${undoShortcut.compact}`;
+  undoButton.setAttribute('aria-keyshortcuts', undoShortcut.ariaKeyShortcuts);
   document.getElementById('btnCancel').addEventListener('click', () => closePopup('cancel'));
   document.getElementById('btnClose').addEventListener('click', () => closePopup('success'));
   document.getElementById('btnConfirm').addEventListener('click', organizeCurrentWindow);
@@ -269,11 +273,7 @@ async function organizeCurrentWindow() {
 
 async function handleUndoShortcut(event) {
   if (
-    event.defaultPrevented
-    || event.key.toLowerCase() !== 'z'
-    || !event.ctrlKey
-    || event.altKey
-    || event.shiftKey
+    !SmartTabKeyboardShortcuts.matchesUndoShortcut(event)
     || !undoAvailable
     || document.getElementById('completionView').hidden
     || isEditableTarget(event.target)

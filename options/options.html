@@ -246,7 +246,7 @@
         </div>
       </div>
 
-      <p id="organizerUndoHint" class="organizer-undo-hint" hidden><kbd>Ctrl</kbd><span>+</span><kbd>Z</kbd> で元に戻せます</p>
+      <p id="organizerUndoHint" class="organizer-undo-hint" aria-keyshortcuts="Control+Z Meta+Z" hidden><kbd data-undo-modifier>Ctrl</kbd><span>+</span><kbd>Z</kbd> で元に戻せます</p>
     </section>
   </main>
 
@@ -294,6 +294,7 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script src="../utils/theme.js"></script>
+  <script src="../utils/keyboard_shortcuts.js"></script>
   <script src="options.js"></script>
 </body>
 </html>
