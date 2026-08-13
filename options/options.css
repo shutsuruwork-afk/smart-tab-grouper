@@ -1565,6 +1565,17 @@ p {
   line-height: 1.55;
 }
 
+.organize-dialog-notice,
+.organize-dialog-summary {
+  display: block;
+}
+
+.organize-dialog-notice {
+  margin-bottom: 6px;
+  color: var(--on-surface);
+  font-weight: 600;
+}
+
 .dialog-actions {
   padding: 0 24px 22px;
   display: flex;

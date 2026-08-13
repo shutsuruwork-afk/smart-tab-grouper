@@ -1,5 +1,6 @@
 import { DEFAULT_CATEGORIES, DEFAULT_SETTINGS } from '../utils/default_rules.js';
 import { normalizeCategories, normalizeRuleSettings } from '../utils/category_rules.js';
+import { buildWindowOrganizeConfirmation } from '../utils/organizer_confirmation.js';
 
 const FALLBACK_CATEGORIES = normalizeCategories(DEFAULT_CATEGORIES);
 
@@ -115,6 +116,7 @@ let organizerState = null;
 let selectedCurrentGroupId = null;
 let organizerLoading = false;
 let organizerRefreshTimer = null;
+let organizerRefreshPending = false;
 let behaviorActionRunning = false;
 let organizerDialogMode = 'window';
 let pendingWindowConfirmationToken = null;
@@ -191,7 +193,10 @@ async function initialize() {
     }
     const returnFocus = organizerDialogReturnFocus;
     resetOrganizerDialogState();
-    window.setTimeout(() => returnFocus?.focus({ preventScroll: true }), 0);
+    window.setTimeout(() => {
+      returnFocus?.focus({ preventScroll: true });
+      flushOrganizerRefresh();
+    }, 0);
   });
   groupEditNameInput.addEventListener('input', () => {
     groupEditStatus.textContent = '';
@@ -339,6 +344,9 @@ function handleGlobalKeydown(event) {
 async function loadOrganizerWorkspace({ announce = false } = {}) {
   if (organizerLoading) return false;
   organizerLoading = true;
+  organizerRefreshPending = false;
+  clearTimeout(organizerRefreshTimer);
+  organizerRefreshTimer = null;
   refreshGroupsButton.disabled = true;
   organizeWindowButton.disabled = true;
   editGroupButton.disabled = true;
@@ -380,6 +388,7 @@ async function loadOrganizerWorkspace({ announce = false } = {}) {
   } finally {
     organizerLoading = false;
     updateOrganizerControls();
+    flushOrganizerRefresh();
   }
 }
 
@@ -533,37 +542,33 @@ async function openOrganizeDialog({ refresh = true } = {}) {
   }
   if (refresh) await loadOrganizerWorkspace();
   if (organizerState?.inProgress) return;
-  const preview = organizerState?.preview;
-  const count = Number(preview?.count) || 0;
-  const groupCount = Number(preview?.groupCount) || 0;
-  const contentMayAdd = contentAssistMayAdd(preview);
-  organizerDialogMode = 'window';
-  pendingWindowConfirmationToken = preview?.confirmationToken || null;
-  pendingGroupReorganization = null;
-  organizerDialogReturnFocus = organizeWindowButton;
-  organizeDialogOverline.textContent = 'UNGROUPED TABS';
-  organizeDialogTitle.textContent = '本当に整理しますか？';
-  const hasContentCandidates = preview?.contentClassificationEnabled
-    && Number(preview?.unresolved) > 0;
-  const assistText = hasContentCandidates
-    ? preview?.contentClassificationAvailable === false
-      ? ' 補助分類はサイトアクセスがないため使用しません。'
-      : preview?.contentLimitExceeded
-        ? ' 補助分類は候補が30件を超えたため使用しません。'
-        : ' 補助分類により対象が増える場合があります。'
-    : '';
-  organizeDialogDescription.textContent = count > 0
-    ? `${count}件の未グループタブを${groupCount}グループへ分類する予定です。${assistText}`
-    : contentMayAdd
-      ? '補助分類で未グループタブを確認し、対象が見つかった場合だけ分類します。'
-      : hasContentCandidates && preview?.contentClassificationAvailable === false
-        ? 'サイトアクセスが解除されています。設定で未登録サイトの自動分類をオンにし直してください。'
-        : '現在の設定で分類できる未グループタブはありません。';
-  confirmOrganizeButton.textContent = '整理';
-  confirmOrganizeButton.disabled = count === 0 && !contentMayAdd;
+  renderWindowOrganizeConfirmation(organizerState?.preview);
   if (typeof organizeDialog.showModal === 'function') organizeDialog.showModal();
   else organizeDialog.setAttribute('open', '');
   cancelOrganizeButton.focus({ preventScroll: true });
+}
+
+function renderWindowOrganizeConfirmation(preview, { stateChanged = false } = {}) {
+  const confirmation = buildWindowOrganizeConfirmation(preview, { stateChanged });
+  organizerDialogMode = 'window';
+  pendingWindowConfirmationToken = confirmation.confirmationToken;
+  pendingGroupReorganization = null;
+  organizerDialogReturnFocus = organizeWindowButton;
+  organizeDialogOverline.textContent = 'UNGROUPED TABS';
+  organizeDialogTitle.textContent = confirmation.title;
+  organizeDialogDescription.replaceChildren();
+  if (confirmation.notice) {
+    const updateNotice = document.createElement('span');
+    updateNotice.className = 'organize-dialog-notice';
+    updateNotice.textContent = confirmation.notice;
+    organizeDialogDescription.append(updateNotice);
+  }
+  const summary = document.createElement('span');
+  summary.className = 'organize-dialog-summary';
+  summary.textContent = confirmation.description;
+  organizeDialogDescription.append(summary);
+  confirmOrganizeButton.textContent = '整理';
+  confirmOrganizeButton.disabled = confirmation.confirmDisabled;
 }
 
 async function openGroupReorganizationDialog() {
@@ -775,6 +780,7 @@ function closeOrganizeDialog() {
   else organizeDialog.removeAttribute('open');
   resetOrganizerDialogState();
   returnFocus?.focus({ preventScroll: true });
+  flushOrganizerRefresh();
 }
 
 function resetOrganizerDialogState() {
@@ -804,10 +810,17 @@ async function organizeCurrentWindowFromSettings() {
     resultReceived = true;
     if (!result?.success) {
       if (result?.code === 'PREVIEW_STALE') {
-        const message = result.message;
-        closeOrganizeDialog();
-        await loadOrganizerWorkspace();
-        setOrganizerStatus(message || '状態が変わりました。最新の件数を確認してください。');
+        const loaded = await loadOrganizerWorkspace();
+        if (!loaded) {
+          organizeDialogDescription.textContent = '最新の状態を確認できませんでした。キャンセルして、もう一度お試しください。';
+          confirmOrganizeButton.disabled = true;
+          cancelOrganizeButton.disabled = false;
+          cancelOrganizeButton.focus({ preventScroll: true });
+          return;
+        }
+        renderWindowOrganizeConfirmation(organizerState?.preview, { stateChanged: true });
+        cancelOrganizeButton.disabled = false;
+        cancelOrganizeButton.focus({ preventScroll: true });
         return;
       }
       throw new Error(result?.message || '整理できませんでした。');
@@ -1103,10 +1116,27 @@ async function refreshContentAccessState() {
 }
 
 function scheduleOrganizerRefresh(delay = 180) {
+  organizerRefreshPending = true;
+  queueOrganizerRefresh(delay);
+}
+
+function flushOrganizerRefresh() {
+  // Preserve an existing debounce/progress delay. Only restore a request whose
+  // timer already fired while a dialog or another load prevented the refresh.
+  if (organizerRefreshPending && organizerRefreshTimer === null) queueOrganizerRefresh(0);
+}
+
+function queueOrganizerRefresh(delay) {
   clearTimeout(organizerRefreshTimer);
   organizerRefreshTimer = setTimeout(() => {
     organizerRefreshTimer = null;
-    if (activeWorkspace === 'organizer' && !organizeDialog.open && !groupEditDialog.open) {
+    if (
+      organizerRefreshPending
+      && activeWorkspace === 'organizer'
+      && !organizerLoading
+      && !organizeDialog.open
+      && !groupEditDialog.open
+    ) {
       loadOrganizerWorkspace();
     }
   }, delay);
