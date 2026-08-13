@@ -441,6 +441,11 @@ function restoreOrganizerControlFocus(previousControl) {
 }
 
 function renderOrganizerWorkspace() {
+  const focusedGroupId = getFocusedListKey(
+    currentGroupList,
+    '.current-group-item',
+    'groupId'
+  );
   const groups = organizerState?.groups || [];
   const tabs = organizerState?.tabs || [];
   const ungrouped = getUngroupedSelection();
@@ -465,6 +470,13 @@ function renderOrganizerWorkspace() {
   organizerUndoHint.hidden = organizerState?.undo?.available !== true;
   scheduleOrganizerUndoExpiry(organizerState?.undo);
   renderSelectedCurrentGroup();
+  restoreRenderedListFocus(
+    currentGroupList,
+    '.current-group-item',
+    'groupId',
+    focusedGroupId,
+    selectedCurrentGroupId
+  );
 }
 
 function scheduleOrganizerUndoExpiry(undoState) {
@@ -493,6 +505,7 @@ function renderCurrentGroupButton(group) {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'current-group-item';
+  button.dataset.groupId = String(group.id);
   button.setAttribute('aria-current', String(group.id === selectedCurrentGroupId));
   button.style.setProperty('--group-color', color.hex);
 
@@ -1243,6 +1256,7 @@ function isEditableElement(target) {
 }
 
 function renderCategoryList() {
+  const focusedCategoryId = getFocusedListKey(categoryList, '.category-item', 'categoryId');
   const enabledCount = categories.filter((category) => category.enabled !== false).length;
   categoryCount.textContent = enabledCount === categories.length
     ? String(categories.length)
@@ -1292,6 +1306,41 @@ function renderCategoryList() {
     button.addEventListener('click', () => selectCategory(category.id));
     categoryList.append(button);
   }
+
+  restoreRenderedListFocus(
+    categoryList,
+    '.category-item',
+    'categoryId',
+    focusedCategoryId,
+    selectedCategoryId
+  );
+}
+
+function getFocusedListKey(container, selector, dataKey) {
+  const activeElement = document.activeElement;
+  if (
+    !(activeElement instanceof HTMLElement)
+    || !activeElement.matches(selector)
+    || !container.contains(activeElement)
+  ) return null;
+  return activeElement.dataset[dataKey] ?? null;
+}
+
+function restoreRenderedListFocus(
+  container,
+  selector,
+  dataKey,
+  previousKey,
+  fallbackKey
+) {
+  if (previousKey === null) return;
+  const items = [...container.querySelectorAll(selector)];
+  const key = SmartTabListFocus.chooseKey(
+    items.map((item) => item.dataset[dataKey]),
+    previousKey,
+    fallbackKey
+  );
+  items.find((item) => item.dataset[dataKey] === key)?.focus({ preventScroll: true });
 }
 
 function renderEditor() {
